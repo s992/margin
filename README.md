@@ -81,3 +81,5 @@ Release artifacts are built for:
 - Linux: `amd64`, `arm64`
 - macOS: `amd64`, `arm64`
 - Windows: `amd64`, `arm64`
+
+<!-- temporary ci smoke test marker -->
