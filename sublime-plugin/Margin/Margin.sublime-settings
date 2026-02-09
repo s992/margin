@@ -4,5 +4,7 @@
   "margin_auto_replace_scratch_tab_with_file": true,
   "margin_llm_client_path": "",
   "margin_llm_client_args": [],
-  "margin_llm_max_context_chars": 12000
+  "margin_llm_max_context_chars": 12000,
+  "margin_cli_timeout_seconds": 60,
+  "margin_llm_timeout_seconds": 180
 }
