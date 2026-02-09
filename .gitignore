@@ -1,0 +1,16 @@
+LEDGER.md
+
+# Go build/test artifacts
+/cli-go/margin
+/cli-go/margin.exe
+/cli-go/*.exe
+/cli-go/*.test
+/cli-go/*.out
+
+# Python cache artifacts
+__pycache__/
+*.py[cod]
+
+# OS/editor junk
+.DS_Store
+Thumbs.db

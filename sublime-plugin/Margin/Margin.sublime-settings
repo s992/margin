@@ -1,0 +1,8 @@
+{
+  "margin_cli_path": "",
+  "margin_root": "",
+  "margin_auto_replace_scratch_tab_with_file": true,
+  "margin_llm_client_path": "",
+  "margin_llm_client_args": [],
+  "margin_llm_max_context_chars": 12000
+}
