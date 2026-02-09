@@ -1,7 +1,8 @@
 package remind
 
 import (
-	"crypto/sha1"
+	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -43,7 +44,10 @@ type ScheduleResult struct {
 	Due []Entry `json:"due"`
 }
 
-func Scan(root string, includeHistory bool) (ScanResult, error) {
+func Scan(ctx context.Context, root string, includeHistory bool) (ScanResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ScanResult{}, err
+	}
 	groups := []string{"scratch", "inbox", "slack"}
 	paths := rootio.ResolvePathGroups(root, groups)
 	if !includeHistory {
@@ -70,6 +74,9 @@ func Scan(root string, includeHistory bool) (ScanResult, error) {
 	}
 	found, added := 0, 0
 	for _, f := range files {
+		if err := ctx.Err(); err != nil {
+			return ScanResult{}, err
+		}
 		data, err := os.ReadFile(f)
 		if err != nil {
 			continue
@@ -112,7 +119,10 @@ func Scan(root string, includeHistory bool) (ScanResult, error) {
 	return ScanResult{Found: found, Added: added, Total: len(store.Entries)}, nil
 }
 
-func Schedule(root string, notify bool) (ScheduleResult, error) {
+func Schedule(ctx context.Context, root string, notify bool) (ScheduleResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ScheduleResult{}, err
+	}
 	store, err := loadStore(root)
 	if err != nil {
 		return ScheduleResult{}, err
@@ -121,6 +131,9 @@ func Schedule(root string, notify bool) (ScheduleResult, error) {
 	due := make([]Entry, 0)
 	changed := false
 	for i := range store.Entries {
+		if err := ctx.Err(); err != nil {
+			return ScheduleResult{}, err
+		}
 		e := &store.Entries[i]
 		if e.Fired {
 			continue
@@ -137,7 +150,7 @@ func Schedule(root string, notify bool) (ScheduleResult, error) {
 		due = append(due, *e)
 		changed = true
 		if notify {
-			_ = sendNotification(e.Message)
+			_ = sendNotification(ctx, e.Message)
 		}
 	}
 	if changed {
@@ -161,7 +174,7 @@ func parseWhen(raw string) (time.Time, error) {
 }
 
 func hashID(parts ...any) string {
-	h := sha1.New()
+	h := sha256.New()
 	for _, p := range parts {
 		_, _ = fmt.Fprint(h, p)
 		_, _ = h.Write([]byte{0})
@@ -197,15 +210,15 @@ func saveStore(root string, st Store) error {
 	return rootio.AtomicWriteFile(storePath(root), b, 0o644)
 }
 
-func sendNotification(msg string) error {
+func sendNotification(ctx context.Context, msg string) error {
 	switch runtime.GOOS {
 	case "darwin":
-		return exec.Command("osascript", "-e", fmt.Sprintf("display notification %q with title \"Margin Reminder\"", msg)).Run()
+		return exec.CommandContext(ctx, "osascript", "-e", fmt.Sprintf("display notification %q with title \"Margin Reminder\"", msg)).Run()
 	case "linux":
-		return exec.Command("notify-send", "Margin Reminder", msg).Run()
+		return exec.CommandContext(ctx, "notify-send", "Margin Reminder", msg).Run()
 	case "windows":
 		script := fmt.Sprintf("[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null; $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText02; $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template); $textNodes = $xml.GetElementsByTagName('text'); $textNodes.Item(0).AppendChild($xml.CreateTextNode('Margin Reminder')) > $null; $textNodes.Item(1).AppendChild($xml.CreateTextNode('%s')) > $null; $toast = [Windows.UI.Notifications.ToastNotification]::new($xml); $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Margin'); $notifier.Show($toast)", strings.ReplaceAll(msg, "'", "''"))
-		return exec.Command("powershell", "-NoProfile", "-Command", script).Run()
+		return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Run()
 	default:
 		return nil
 	}

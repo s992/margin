@@ -1,6 +1,7 @@
 package slackcap
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 
 	"margin/internal/rootio"
 )
+
+var slackHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 type Message struct {
 	User string `json:"user"`
@@ -51,10 +54,7 @@ func ParseThreadInput(channel, thread string) (string, string, error) {
 		m := msgURLRe.FindStringSubmatch(u.Path)
 		if len(m) == 3 {
 			channel = m[1]
-			thread = fmt.Sprintf("%s.%s", m[2][:10], strings.TrimLeft(m[2][10:], "0"))
-			if strings.HasSuffix(thread, ".") {
-				thread += "0"
-			}
+			thread = fmt.Sprintf("%s.%s", m[2][:10], m[2][10:])
 			return channel, thread, nil
 		}
 		q := u.Query()
@@ -71,7 +71,10 @@ func ParseThreadInput(channel, thread string) (string, string, error) {
 	return channel, thread, nil
 }
 
-func Capture(root, channel, thread, tokenEnv, format string) (CaptureResult, error) {
+func Capture(ctx context.Context, root, channel, thread, tokenEnv, format string) (CaptureResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CaptureResult{}, err
+	}
 	if tokenEnv == "" {
 		tokenEnv = "SLACK_TOKEN"
 	}
@@ -84,12 +87,12 @@ func Capture(root, channel, thread, tokenEnv, format string) (CaptureResult, err
 		return CaptureResult{}, err
 	}
 	if !strings.HasPrefix(ch, "C") && !strings.HasPrefix(ch, "G") {
-		ch, err = resolveChannelID(ch, token)
+		ch, err = resolveChannelID(ctx, ch, token)
 		if err != nil {
 			return CaptureResult{}, err
 		}
 	}
-	msgs, err := fetchReplies(ch, th, token)
+	msgs, err := fetchReplies(ctx, ch, th, token)
 	if err != nil {
 		return CaptureResult{}, err
 	}
@@ -114,14 +117,17 @@ func Capture(root, channel, thread, tokenEnv, format string) (CaptureResult, err
 	}, nil
 }
 
-func resolveChannelID(name, token string) (string, error) {
+func resolveChannelID(ctx context.Context, name, token string) (string, error) {
 	cursor := ""
 	for {
-		u := "https://slack.com/api/conversations.list?limit=200&types=public_channel,private_channel"
-		if cursor != "" {
-			u += "&cursor=" + url.QueryEscape(cursor)
+		if err := ctx.Err(); err != nil {
+			return "", err
 		}
-		body, err := apiGet(u, token)
+		endpoint := "https://slack.com/api/conversations.list?limit=200&types=public_channel,private_channel"
+		if cursor != "" {
+			endpoint += "&cursor=" + url.QueryEscape(cursor)
+		}
+		body, err := apiGet(ctx, endpoint, token)
 		if err != nil {
 			return "", err
 		}
@@ -155,15 +161,18 @@ func resolveChannelID(name, token string) (string, error) {
 	return "", fmt.Errorf("channel not found: %s", name)
 }
 
-func fetchReplies(channel, thread, token string) ([]Message, error) {
+func fetchReplies(ctx context.Context, channel, thread, token string) ([]Message, error) {
 	cursor := ""
 	out := make([]Message, 0, 32)
 	for {
-		u := fmt.Sprintf("https://slack.com/api/conversations.replies?channel=%s&ts=%s&limit=200", url.QueryEscape(channel), url.QueryEscape(thread))
-		if cursor != "" {
-			u += "&cursor=" + url.QueryEscape(cursor)
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		body, err := apiGet(u, token)
+		endpoint := fmt.Sprintf("https://slack.com/api/conversations.replies?channel=%s&ts=%s&limit=200", url.QueryEscape(channel), url.QueryEscape(thread))
+		if cursor != "" {
+			endpoint += "&cursor=" + url.QueryEscape(cursor)
+		}
+		body, err := apiGet(ctx, endpoint, token)
 		if err != nil {
 			return nil, err
 		}
@@ -205,14 +214,14 @@ func renderMessages(channel, thread string, msgs []Message, format string) strin
 	return sb.String()
 }
 
-func apiGet(url, token string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func apiGet(ctx context.Context, endpoint, token string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	cli := &http.Client{Timeout: 30 * time.Second}
-	resp, err := cli.Do(req)
+	req.Header.Set("User-Agent", "margin-cli/0.1")
+	resp, err := slackHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

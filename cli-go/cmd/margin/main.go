@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"margin/internal/config"
 	"margin/internal/mcpserver"
@@ -24,6 +29,9 @@ var (
 )
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	if len(os.Args) < 2 || os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v" {
 		writeJSON(map[string]string{
 			"version": version,
@@ -36,73 +44,63 @@ func main() {
 	args := os.Args[2:]
 	switch sub {
 	case "search":
-		handleSearch(args)
+		handleSearch(ctx, args)
 	case "remind":
-		handleRemind(args)
+		handleRemind(ctx, args)
 	case "run-block":
-		handleRunBlock(args)
+		handleRunBlock(ctx, args)
 	case "slack":
-		handleSlack(args)
+		handleSlack(ctx, args)
 	case "mcp":
-		handleMCP(args)
+		handleMCP(ctx, args)
 	default:
 		fatalf(2, "unknown subcommand: %s", sub)
 	}
 }
 
-func handleSearch(args []string) {
-	fs := flag.NewFlagSet("search", flag.ExitOnError)
+func handleSearch(ctx context.Context, args []string) {
+	fs := newFlagSet("search")
 	query := fs.String("query", "", "query")
 	paths := fs.String("paths", "", "comma paths")
 	limit := fs.Int("limit", 50, "limit")
 	root := fs.String("root", rootio.DefaultRoot(), "root")
 	configPath := fs.String("config", "", "config path")
-	_ = fs.Parse(args)
-	cfg, _, err := config.Load(*root, *configPath)
-	if err != nil {
-		fatalf(1, "load config: %v", err)
-	}
-	if err := rootio.EnsureLayout(*root); err != nil {
-		fatalf(1, "ensure layout: %v", err)
-	}
+	parseFlags(fs, args)
+
+	cfg := loadConfigAndLayout(*root, *configPath)
 	groups := cfg.SearchPaths
 	if strings.TrimSpace(*paths) != "" {
 		groups = splitCSV(*paths)
 	}
-	res, err := search.Run(*root, *query, groups, *limit)
+	res, err := search.Run(ctx, *root, *query, groups, *limit)
 	if err != nil {
 		fatalf(1, "search: %v", err)
 	}
 	writeJSON(res)
 }
 
-func handleRemind(args []string) {
+func handleRemind(ctx context.Context, args []string) {
 	if len(args) < 1 {
 		fatalf(2, "usage: margin remind <scan|schedule>")
 	}
 	sub := args[0]
-	fs := flag.NewFlagSet("remind "+sub, flag.ExitOnError)
+	fs := newFlagSet("remind " + sub)
 	root := fs.String("root", rootio.DefaultRoot(), "root")
 	configPath := fs.String("config", "", "config path")
 	includeHistory := fs.Bool("include-history", false, "include scratch history")
 	notify := fs.Bool("notify", true, "attempt desktop notifications")
-	_ = fs.Parse(args[1:])
-	_, _, err := config.Load(*root, *configPath)
-	if err != nil {
-		fatalf(1, "load config: %v", err)
-	}
-	if err := rootio.EnsureLayout(*root); err != nil {
-		fatalf(1, "ensure layout: %v", err)
-	}
+	parseFlags(fs, args[1:])
+
+	_ = loadConfigAndLayout(*root, *configPath)
 	switch sub {
 	case "scan":
-		res, err := remind.Scan(*root, *includeHistory)
+		res, err := remind.Scan(ctx, *root, *includeHistory)
 		if err != nil {
 			fatalf(1, "remind scan: %v", err)
 		}
 		writeJSON(res)
 	case "schedule":
-		res, err := remind.Schedule(*root, *notify)
+		res, err := remind.Schedule(ctx, *root, *notify)
 		if err != nil {
 			fatalf(1, "remind schedule: %v", err)
 		}
@@ -112,17 +110,15 @@ func handleRemind(args []string) {
 	}
 }
 
-func handleRunBlock(args []string) {
-	fs := flag.NewFlagSet("run-block", flag.ExitOnError)
+func handleRunBlock(ctx context.Context, args []string) {
+	fs := newFlagSet("run-block")
 	file := fs.String("file", "", "file path")
 	cursor := fs.String("cursor", "0", "cursor offset")
 	root := fs.String("root", rootio.DefaultRoot(), "root")
 	configPath := fs.String("config", "", "config path")
-	_ = fs.Parse(args)
-	cfg, _, err := config.Load(*root, *configPath)
-	if err != nil {
-		fatalf(1, "load config: %v", err)
-	}
+	parseFlags(fs, args)
+
+	cfg := loadConfig(*root, *configPath)
 	if *file == "" {
 		fatalf(2, "--file required")
 	}
@@ -130,14 +126,14 @@ func handleRunBlock(args []string) {
 	if err != nil {
 		fatalf(2, "invalid --cursor: %v", err)
 	}
-	res, err := runblock.Run(*file, cur, cfg.RunBlock)
+	res, err := runblock.Run(ctx, *file, cur, cfg.RunBlock)
 	if err != nil {
 		fatalf(1, "run-block: %v", err)
 	}
 	writeJSON(res)
 }
 
-func handleSlack(args []string) {
+func handleSlack(ctx context.Context, args []string) {
 	if len(args) < 1 {
 		fatalf(2, "usage: margin slack capture")
 	}
@@ -145,44 +141,34 @@ func handleSlack(args []string) {
 	if sub != "capture" {
 		fatalf(2, "unknown slack subcommand: %s", sub)
 	}
-	fs := flag.NewFlagSet("slack capture", flag.ExitOnError)
+	fs := newFlagSet("slack capture")
 	channel := fs.String("channel", "", "channel id or name")
 	thread := fs.String("thread", "", "thread ts or link")
 	tokenEnv := fs.String("token-env", "SLACK_TOKEN", "token env var")
 	format := fs.String("format", "markdown", "markdown|text")
 	root := fs.String("root", rootio.DefaultRoot(), "root")
 	configPath := fs.String("config", "", "config path")
-	_ = fs.Parse(args[1:])
-	_, _, err := config.Load(*root, *configPath)
-	if err != nil {
-		fatalf(1, "load config: %v", err)
-	}
-	if err := rootio.EnsureLayout(*root); err != nil {
-		fatalf(1, "ensure layout: %v", err)
-	}
-	res, err := slackcap.Capture(*root, *channel, *thread, *tokenEnv, *format)
+	parseFlags(fs, args[1:])
+
+	_ = loadConfigAndLayout(*root, *configPath)
+	res, err := slackcap.Capture(ctx, *root, *channel, *thread, *tokenEnv, *format)
 	if err != nil {
 		fatalf(1, "slack capture: %v", err)
 	}
 	writeJSON(res)
 }
 
-func handleMCP(args []string) {
-	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
+func handleMCP(ctx context.Context, args []string) {
+	fs := newFlagSet("mcp")
 	transport := fs.String("transport", "stdio", "transport")
 	readonly := fs.String("readonly", "", "true|false")
 	root := fs.String("root", rootio.DefaultRoot(), "root")
 	configPath := fs.String("config", "", "config path")
-	_ = fs.Parse(args)
-	cfg, _, err := config.Load(*root, *configPath)
-	if err != nil {
-		fatalf(1, "load config: %v", err)
-	}
+	parseFlags(fs, args)
+
+	cfg := loadConfigAndLayout(*root, *configPath)
 	if *transport != "stdio" {
 		fatalf(2, "unsupported transport: %s", *transport)
-	}
-	if err := rootio.EnsureLayout(*root); err != nil {
-		fatalf(1, "ensure layout: %v", err)
 	}
 	ro := cfg.MCPReadonly
 	if *readonly != "" {
@@ -196,9 +182,40 @@ func handleMCP(args []string) {
 		fatalf(1, "mcp disabled in config; set mcp_enabled=true or pass --readonly explicitly to override")
 	}
 	srv := mcpserver.New(*root, ro, cfg.SearchPaths)
-	if err := srv.Run(); err != nil {
+	if err := srv.Run(ctx); err != nil {
 		fatalf(1, "mcp server: %v", err)
 	}
+}
+
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}
+
+func parseFlags(fs *flag.FlagSet, args []string) {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fatalf(2, "%s", fs.Name())
+		}
+		fatalf(2, "%s", err)
+	}
+}
+
+func loadConfig(root, configPath string) config.Config {
+	cfg, _, err := config.Load(root, configPath)
+	if err != nil {
+		fatalf(1, "load config: %v", err)
+	}
+	return cfg
+}
+
+func loadConfigAndLayout(root, configPath string) config.Config {
+	cfg := loadConfig(root, configPath)
+	if err := rootio.EnsureLayout(root); err != nil {
+		fatalf(1, "ensure layout: %v", err)
+	}
+	return cfg
 }
 
 func splitCSV(s string) []string {

@@ -6,6 +6,23 @@ import (
 	"path/filepath"
 )
 
+const (
+	defaultAutosaveIntervalSeconds = 5
+	defaultSnapshotIntervalMinutes = 10
+	defaultPythonBin               = "python"
+	defaultShell                   = "bash"
+)
+
+var defaultSearchPaths = []string{"scratch", "inbox", "slack"}
+
+var defaultSyntaxExtensionMap = map[string]string{
+	"Plain Text": "md",
+	"Markdown":   "md",
+	"Python":     "py",
+	"JSON":       "json",
+	"Shell":      "sh",
+}
+
 type RunBlockConfig struct {
 	PythonBin string `json:"python_bin"`
 	Shell     string `json:"shell"`
@@ -27,24 +44,18 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		AutosaveIntervalSeconds: 5,
-		SnapshotIntervalMinutes: 10,
-		SearchPaths:             []string{"scratch", "inbox", "slack"},
+		AutosaveIntervalSeconds: defaultAutosaveIntervalSeconds,
+		SnapshotIntervalMinutes: defaultSnapshotIntervalMinutes,
+		SearchPaths:             cloneStringSlice(defaultSearchPaths),
 		RemindEnabled:           false,
 		SlackEnabled:            false,
 		MCPEnabled:              false,
 		MCPReadonly:             true,
 		ForceMarkdownExtension:  true,
-		SyntaxExtensionMap: map[string]string{
-			"Plain Text": "md",
-			"Markdown":   "md",
-			"Python":     "py",
-			"JSON":       "json",
-			"Shell":      "sh",
-		},
+		SyntaxExtensionMap:      cloneStringMap(defaultSyntaxExtensionMap),
 		RunBlock: RunBlockConfig{
-			PythonBin: "python",
-			Shell:     "bash",
+			PythonBin: defaultPythonBin,
+			Shell:     defaultShell,
 		},
 	}
 }
@@ -64,20 +75,41 @@ func Load(root, configPath string) (Config, string, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, configPath, err
 	}
-	if cfg.AutosaveIntervalSeconds <= 0 {
-		cfg.AutosaveIntervalSeconds = 5
-	}
-	if cfg.SnapshotIntervalMinutes <= 0 {
-		cfg.SnapshotIntervalMinutes = 10
-	}
-	if len(cfg.SearchPaths) == 0 {
-		cfg.SearchPaths = []string{"scratch", "inbox", "slack"}
-	}
-	if cfg.RunBlock.PythonBin == "" {
-		cfg.RunBlock.PythonBin = "python"
-	}
-	if cfg.RunBlock.Shell == "" {
-		cfg.RunBlock.Shell = "bash"
-	}
+	cfg.applyDefaults()
 	return cfg, configPath, nil
+}
+
+func (c *Config) applyDefaults() {
+	if c.AutosaveIntervalSeconds <= 0 {
+		c.AutosaveIntervalSeconds = defaultAutosaveIntervalSeconds
+	}
+	if c.SnapshotIntervalMinutes <= 0 {
+		c.SnapshotIntervalMinutes = defaultSnapshotIntervalMinutes
+	}
+	if len(c.SearchPaths) == 0 {
+		c.SearchPaths = cloneStringSlice(defaultSearchPaths)
+	}
+	if c.SyntaxExtensionMap == nil {
+		c.SyntaxExtensionMap = cloneStringMap(defaultSyntaxExtensionMap)
+	}
+	if c.RunBlock.PythonBin == "" {
+		c.RunBlock.PythonBin = defaultPythonBin
+	}
+	if c.RunBlock.Shell == "" {
+		c.RunBlock.Shell = defaultShell
+	}
+}
+
+func cloneStringSlice(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

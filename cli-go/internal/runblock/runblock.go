@@ -2,6 +2,7 @@ package runblock
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,8 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/shlex"
+
 	"margin/internal/config"
 )
+
+const executionTimeout = 30 * time.Second
 
 var fenceRe = regexp.MustCompile("(?m)^[ \\t]{0,3}```([A-Za-z0-9_+-]*)[ \\t]*\\r?$")
 
@@ -36,7 +41,10 @@ type Result struct {
 	BlockEnd int    `json:"block_end"`
 }
 
-func Run(filePath string, cursor int, cfg config.RunBlockConfig) (Result, error) {
+func Run(ctx context.Context, filePath string, cursor int, cfg config.RunBlockConfig) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	b, err := os.ReadFile(filePath)
 	if err != nil {
 		return Result{}, err
@@ -54,11 +62,11 @@ func Run(filePath string, cursor int, cfg config.RunBlockConfig) (Result, error)
 	res := Result{Language: lang, RanAt: time.Now().Format(time.RFC3339), BlockEnd: block.End}
 	switch lang {
 	case "bash", "sh", "shell":
-		output, code := runShell(block.Code, cfg.Shell)
+		output, code := runShell(ctx, block.Code, cfg.Shell)
 		res.Output = output
 		res.ExitCode = code
 	case "python", "py":
-		output, code := runPython(block.Code, cfg.PythonBin)
+		output, code := runPython(ctx, block.Code, cfg.PythonBin)
 		res.Output = output
 		res.ExitCode = code
 	case "json":
@@ -74,7 +82,7 @@ func Run(filePath string, cursor int, cfg config.RunBlockConfig) (Result, error)
 		if strings.TrimSpace(cfg.SQLCmd) == "" {
 			return Result{}, errors.New("sql execution unsupported without runblock.sql_cmd")
 		}
-		output, code := runWithCmd(cfg.SQLCmd, block.Code)
+		output, code := runWithCmd(ctx, cfg.SQLCmd, block.Code)
 		res.Output = output
 		res.ExitCode = code
 	default:
@@ -164,11 +172,11 @@ func PickBlock(blocks []Block, cursor int) *Block {
 	return &blocks[cands[0].idx]
 }
 
-func runShell(code, shell string) (string, int) {
+func runShell(ctx context.Context, code, shell string) (string, int) {
 	candidates := shellCandidates(shell)
 	lastErr := ""
 	for _, sh := range candidates {
-		output, exitCode, err := runShellWithBinary(sh, code)
+		output, exitCode, err := runShellWithBinary(ctx, sh, code)
 		if err == nil {
 			return output, exitCode
 		}
@@ -184,19 +192,22 @@ func runShell(code, shell string) (string, int) {
 	return lastErr, 1
 }
 
-func runShellWithBinary(shell, code string) (string, int, error) {
+func runShellWithBinary(ctx context.Context, shell, code string) (string, int, error) {
 	s := strings.TrimSpace(shell)
 	if s == "" {
 		return "", 1, errors.New("empty shell")
 	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, executionTimeout)
+	defer cancel()
+
 	var cmd *exec.Cmd
 	switch strings.ToLower(s) {
 	case "wsl.exe", "wsl":
-		cmd = exec.Command(s, "bash", "-lc", code)
+		cmd = exec.CommandContext(timeoutCtx, s, "bash", "-lc", code)
 	case "cmd.exe", "cmd":
-		cmd = exec.Command(s, "/C", code)
+		cmd = exec.CommandContext(timeoutCtx, s, "/C", code)
 	default:
-		cmd = exec.Command(s, "-lc", code)
+		cmd = exec.CommandContext(timeoutCtx, s, "-lc", code)
 	}
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -204,6 +215,12 @@ func runShellWithBinary(shell, code string) (string, int, error) {
 	err := cmd.Run()
 	if err == nil {
 		return out.String(), 0, nil
+	}
+	if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+		return out.String(), 124, fmt.Errorf("command timed out after %s", executionTimeout)
+	}
+	if errors.Is(timeoutCtx.Err(), context.Canceled) {
+		return out.String(), 130, timeoutCtx.Err()
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
@@ -250,10 +267,13 @@ func isNotFoundErr(err error) bool {
 		return true
 	}
 	var pe *os.PathError
-	return errors.As(err, &pe)
+	if errors.As(err, &pe) {
+		return errors.Is(pe.Err, os.ErrNotExist)
+	}
+	return false
 }
 
-func runPython(code, pythonBin string) (string, int) {
+func runPython(ctx context.Context, code, pythonBin string) (string, int) {
 	if strings.TrimSpace(pythonBin) == "" {
 		pythonBin = "python"
 	}
@@ -265,15 +285,29 @@ func runPython(code, pythonBin string) (string, int) {
 	defer func() {
 		_ = os.Remove(tmpName)
 	}()
-	_, _ = tmp.WriteString(code)
-	_ = tmp.Close()
-	cmd := exec.Command(pythonBin, tmpName)
+	if _, err := tmp.WriteString(code); err != nil {
+		_ = tmp.Close()
+		return err.Error(), 1
+	}
+	if err := tmp.Close(); err != nil {
+		return err.Error(), 1
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, executionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(timeoutCtx, pythonBin, tmpName)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	err = cmd.Run()
 	if err == nil {
 		return out.String(), 0
+	}
+	if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+		return out.String() + "\ncommand timed out", 124
+	}
+	if errors.Is(timeoutCtx.Err(), context.Canceled) {
+		return out.String() + "\ncommand canceled", 130
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
@@ -282,19 +316,30 @@ func runPython(code, pythonBin string) (string, int) {
 	return out.String() + "\n" + err.Error(), 1
 }
 
-func runWithCmd(command, input string) (string, int) {
-	parts := strings.Fields(command)
+func runWithCmd(ctx context.Context, command, input string) (string, int) {
+	parts, err := shlex.Split(command)
+	if err != nil {
+		return "invalid command: " + err.Error(), 1
+	}
 	if len(parts) == 0 {
 		return "invalid command", 1
 	}
-	cmd := exec.Command(parts[0], parts[1:]...)
+	timeoutCtx, cancel := context.WithTimeout(ctx, executionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(timeoutCtx, parts[0], parts[1:]...)
 	cmd.Stdin = strings.NewReader(input)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	err := cmd.Run()
+	err = cmd.Run()
 	if err == nil {
 		return out.String(), 0
+	}
+	if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+		return out.String() + "\ncommand timed out", 124
+	}
+	if errors.Is(timeoutCtx.Err(), context.Canceled) {
+		return out.String() + "\ncommand canceled", 130
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {

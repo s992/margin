@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,15 @@ import (
 
 	"margin/internal/rootio"
 	"margin/internal/search"
+)
+
+const (
+	protocolVersion       = "2024-11-05"
+	serverVersion         = "0.1.0"
+	defaultSearchLimit    = 20
+	defaultRecentLimit    = 20
+	maxToolLimit          = 500
+	maxIncomingMessageLen = 4 << 20
 )
 
 type Server struct {
@@ -52,17 +62,24 @@ type RecentItem struct {
 }
 
 func New(root string, readonly bool, paths []string) *Server {
+	return NewWithIO(root, readonly, paths, os.Stdin, os.Stdout)
+}
+
+func NewWithIO(root string, readonly bool, paths []string, in io.Reader, out io.Writer) *Server {
 	return &Server{
 		Root:     root,
 		Readonly: readonly,
 		Paths:    paths,
-		in:       bufio.NewReader(os.Stdin),
-		out:      os.Stdout,
+		in:       bufio.NewReader(in),
+		out:      out,
 	}
 }
 
-func (s *Server) Run() error {
+func (s *Server) Run(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		msg, err := s.readMessage()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -78,11 +95,11 @@ func (s *Server) Run() error {
 			continue
 		}
 		if req.ID == nil {
-			_ = s.handleNotification(req)
+			_ = s.handleNotification(ctx, req)
 			continue
 		}
 		resp := rpcResponse{JSONRPC: "2.0", ID: req.ID}
-		result, rpcErr := s.handleRequest(req)
+		result, rpcErr := s.handleRequest(ctx, req)
 		if rpcErr != nil {
 			resp.Error = rpcErr
 		} else {
@@ -94,21 +111,24 @@ func (s *Server) Run() error {
 	}
 }
 
-func (s *Server) handleNotification(req rpcRequest) error {
-	return nil
+func (s *Server) handleNotification(ctx context.Context, req rpcRequest) error {
+	return ctx.Err()
 }
 
-func (s *Server) handleRequest(req rpcRequest) (any, *rpcError) {
+func (s *Server) handleRequest(ctx context.Context, req rpcRequest) (any, *rpcError) {
+	if err := ctx.Err(); err != nil {
+		return nil, &rpcError{Code: -32800, Message: err.Error()}
+	}
 	switch req.Method {
 	case "initialize":
 		return map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": protocolVersion,
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
 			},
 			"serverInfo": map[string]any{
 				"name":    "margin",
-				"version": "0.1.0",
+				"version": serverVersion,
 			},
 		}, nil
 	case "ping":
@@ -123,7 +143,13 @@ func (s *Server) handleRequest(req rpcRequest) (any, *rpcError) {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return nil, &rpcError{Code: -32602, Message: err.Error()}
 		}
-		return s.callTool(p.Name, p.Arguments)
+		if p.Name == "" {
+			return nil, &rpcError{Code: -32602, Message: "name is required"}
+		}
+		if p.Arguments == nil {
+			p.Arguments = map[string]any{}
+		}
+		return s.callTool(ctx, p.Name, p.Arguments)
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found"}
 	}
@@ -134,45 +160,83 @@ func (s *Server) toolSpecs() []map[string]any {
 		{
 			"name":        "search",
 			"description": "Search notes",
-			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "limit": map[string]any{"type": "number"}, "paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"query"}},
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string"},
+					"limit": map[string]any{"type": "number"},
+					"paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				},
+				"required": []string{"query"},
+			},
 		},
 		{
 			"name":        "read_file",
 			"description": "Read file under margin root",
-			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "start_line": map[string]any{"type": "number"}, "end_line": map[string]any{"type": "number"}}, "required": []string{"path"}},
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path":       map[string]any{"type": "string"},
+					"start_line": map[string]any{"type": "number"},
+					"end_line":   map[string]any{"type": "number"},
+				},
+				"required": []string{"path"},
+			},
 		},
 		{
 			"name":        "recent",
 			"description": "List recent files",
-			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"limit": map[string]any{"type": "number"}, "since": map[string]any{"type": "string"}}},
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"limit": map[string]any{"type": "number"},
+					"since": map[string]any{"type": "string"},
+				},
+			},
 		},
 	}
 	if !s.Readonly {
 		tools = append(tools, map[string]any{
 			"name":        "append",
 			"description": "Append text under scratch/inbox/slack",
-			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}}, "required": []string{"content"}},
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path":    map[string]any{"type": "string"},
+					"content": map[string]any{"type": "string"},
+				},
+				"required": []string{"content"},
+			},
 		})
 	}
 	return tools
 }
 
-func (s *Server) callTool(name string, args map[string]any) (any, *rpcError) {
+func (s *Server) callTool(ctx context.Context, name string, args map[string]any) (any, *rpcError) {
+	if err := ctx.Err(); err != nil {
+		return toolError(err), nil
+	}
 	switch name {
 	case "search":
 		query, _ := args["query"].(string)
-		limit := int(numberArg(args["limit"], 20))
+		if strings.TrimSpace(query) == "" {
+			return toolError(errors.New("query is required")), nil
+		}
+		limit := clampedLimit(args["limit"], defaultSearchLimit)
 		paths := stringSliceArg(args["paths"])
 		if len(paths) == 0 {
 			paths = s.Paths
 		}
-		res, err := search.Run(s.Root, query, paths, limit)
+		res, err := search.Run(ctx, s.Root, query, paths, limit)
 		if err != nil {
 			return toolError(err), nil
 		}
 		return toolResult(res), nil
 	case "read_file":
 		p, _ := args["path"].(string)
+		if strings.TrimSpace(p) == "" {
+			return toolError(errors.New("path is required")), nil
+		}
 		abs, err := s.safePath(p)
 		if err != nil {
 			return toolError(err), nil
@@ -200,7 +264,7 @@ func (s *Server) callTool(name string, args map[string]any) (any, *rpcError) {
 		}
 		return toolResult(map[string]any{"path": filepath.ToSlash(p), "content": content}), nil
 	case "recent":
-		limit := int(numberArg(args["limit"], 20))
+		limit := clampedLimit(args["limit"], defaultRecentLimit)
 		sinceRaw, _ := args["since"].(string)
 		var since time.Time
 		if sinceRaw != "" {
@@ -215,6 +279,9 @@ func (s *Server) callTool(name string, args map[string]any) (any, *rpcError) {
 		}
 		items := make([]RecentItem, 0, len(files))
 		for _, f := range files {
+			if err := ctx.Err(); err != nil {
+				return toolError(err), nil
+			}
 			st, err := os.Stat(f)
 			if err != nil {
 				continue
@@ -231,7 +298,7 @@ func (s *Server) callTool(name string, args map[string]any) (any, *rpcError) {
 			items = append(items, RecentItem{Path: rel, Mtime: st.ModTime().Format(time.RFC3339), Preview: preview})
 		}
 		sortByMtimeDesc(items)
-		if limit > 0 && len(items) > limit {
+		if len(items) > limit {
 			items = items[:limit]
 		}
 		return toolResult(items), nil
@@ -258,8 +325,13 @@ func (s *Server) callTool(name string, args map[string]any) (any, *rpcError) {
 		if err != nil {
 			return toolError(err), nil
 		}
-		_, _ = fh.WriteString(content)
-		_ = fh.Close()
+		if _, err := fh.WriteString(content); err != nil {
+			_ = fh.Close()
+			return toolError(err), nil
+		}
+		if err := fh.Close(); err != nil {
+			return toolError(err), nil
+		}
 		rel, _ := rootio.RelUnderRoot(s.Root, abs)
 		return toolResult(map[string]any{"path": rel, "appended": len(content)}), nil
 	default:
@@ -291,6 +363,17 @@ func (s *Server) safeAppendPath(rel string) (string, error) {
 	return abs, nil
 }
 
+func clampedLimit(v any, def int) int {
+	limit := int(numberArg(v, float64(def)))
+	if limit <= 0 {
+		return def
+	}
+	if limit > maxToolLimit {
+		return maxToolLimit
+	}
+	return limit
+}
+
 func numberArg(v any, def float64) float64 {
 	switch t := v.(type) {
 	case float64:
@@ -318,7 +401,10 @@ func stringSliceArg(v any) []string {
 }
 
 func toolResult(v any) map[string]any {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		b = []byte(`{"error":"serialization failed"}`)
+	}
 	return map[string]any{
 		"content":           []map[string]any{{"type": "text", "text": string(b)}},
 		"structuredContent": v,
@@ -370,6 +456,12 @@ func (s *Server) readMessage() ([]byte, error) {
 	}
 	if length < 0 {
 		return nil, fmt.Errorf("missing content-length")
+	}
+	if length == 0 {
+		return nil, fmt.Errorf("invalid content-length: 0")
+	}
+	if length > maxIncomingMessageLen {
+		return nil, fmt.Errorf("content-length exceeds max allowed size")
 	}
 	buf := make([]byte, length)
 	if _, err := io.ReadFull(s.in, buf); err != nil {
