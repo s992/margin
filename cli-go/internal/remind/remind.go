@@ -163,7 +163,7 @@ func parseWhen(raw string) (time.Time, error) {
 func hashID(parts ...any) string {
 	h := sha1.New()
 	for _, p := range parts {
-		_, _ = h.Write([]byte(fmt.Sprint(p)))
+		_, _ = fmt.Fprint(h, p)
 		_, _ = h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))

@@ -283,7 +283,9 @@ func (s *Server) safeAppendPath(rel string) (string, error) {
 		return "", err
 	}
 	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel)))
-	if !(strings.HasPrefix(clean, "scratch/") || strings.HasPrefix(clean, "inbox/") || strings.HasPrefix(clean, "slack/")) {
+	if !strings.HasPrefix(clean, "scratch/") &&
+		!strings.HasPrefix(clean, "inbox/") &&
+		!strings.HasPrefix(clean, "slack/") {
 		return "", fmt.Errorf("append path must be under scratch/, inbox/, or slack/")
 	}
 	return abs, nil

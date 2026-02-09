@@ -262,7 +262,9 @@ func runPython(code, pythonBin string) (string, int) {
 		return err.Error(), 1
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() {
+		_ = os.Remove(tmpName)
+	}()
 	_, _ = tmp.WriteString(code)
 	_ = tmp.Close()
 	cmd := exec.Command(pythonBin, tmpName)
