@@ -1,0 +1,32 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-json
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.8
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^sublime-plugin/Margin/.*\.py$
+      - id: ruff-format
+        files: ^sublime-plugin/Margin/.*\.py$
+
+  - repo: local
+    hooks:
+      - id: gofmt-check
+        name: gofmt check
+        language: system
+        entry: bash -c 'cd cli-go && test -z "$(gofmt -l .)"'
+        pass_filenames: false
+      - id: go-vet
+        name: go vet
+        language: system
+        entry: bash -c 'cd cli-go && go vet ./...'
+        pass_filenames: false

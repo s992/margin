@@ -1,4 +1,6 @@
 LEDGER.md
+dist/
+.venv/
 
 # Go build/test artifacts
 /cli-go/margin

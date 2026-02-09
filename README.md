@@ -2,56 +2,59 @@
 
 Local-first scratch workflow for Sublime Text backed by a Go CLI.
 
-## AI-Generated Notice
+## Repository layout
 
-This project was generated with AI assistance. Use it at your own risk.
+- `cli-go/`: Go CLI (`margin`) code and tests
+- `sublime-plugin/Margin/`: Sublime Text plugin
+- `.github/workflows/`: CI and release automation
 
-Before using it for important or sensitive work, review the code and test it in your environment. AI-generated code can contain security vulnerabilities, data-loss bugs, incorrect behavior, and incomplete error handling.
+## Project status
 
-## Repo layout
+The repository currently does not declare an open-source license.
 
-- `sublime-plugin/Margin/` Sublime plugin (thin UI + async subprocess calls)
-- `cli-go/` Go CLI (`margin`) single-binary app
+## Prerequisites
 
-## Data root (defaults)
+- Go (see `cli-go/go.mod`)
+- Python 3.11+
+- `ruff`
+- `pre-commit`
 
-- Windows: `%APPDATA%/Margin`
-- macOS: `~/Library/Application Support/Margin`
-- Linux: `~/.local/share/margin`
-
-Under root:
-
-- `scratch/current/`
-- `scratch/history/YYYY/YYYY-MM-DD/`
-- `inbox/`
-- `slack/`
-- `index/reminders.json`
-- `bin/margin(.exe)`
-- `config.json`
-- `logs/`
-
-## Build CLI
+## Developer quickstart
 
 ```bash
-cd cli-go
-go build -o margin ./cmd/margin
+pre-commit install
+make check
+make build
 ```
 
-Place the binary in one of:
+Root-level commands:
+
+- `make fmt`: format Go and Python
+- `make lint`: run static checks and format checks
+- `make test`: run tests
+- `make check`: lint + test
+- `make build`: build local CLI
+- `make plugin-package`: build `dist/Margin.sublime-package`
+- `make release-snapshot`: local GoReleaser dry run (no publish)
+
+## CLI install and plugin wiring
+
+Build locally:
+
+```bash
+make build
+```
+
+The plugin locates the CLI in this order:
 
 1. Sublime setting `margin_cli_path`
-2. `<root>/bin/margin(.exe)`
+2. `<margin_root>/bin/margin` (or `margin.exe` on Windows)
 3. `PATH`
-
-## Sublime install
-
-Copy `sublime-plugin/Margin` into Sublime `Packages/` (or install manually via Package Control local package workflow).
-
-Commands are exposed via Command Palette with `Margin:` prefix.
 
 ## CLI commands
 
 ```bash
+margin version
 margin search --query "foo" --root "<root>" [--paths scratch,inbox,slack] [--limit 50]
 margin remind scan --root "<root>"
 margin remind schedule --root "<root>"
@@ -60,37 +63,21 @@ margin slack capture --channel C123 --thread 1712345678.000100 --root "<root>" -
 margin mcp --transport stdio --root "<root>" [--readonly true|false]
 ```
 
-All successful command results are JSON written to stdout.
+## Release process
 
-## Config (`<root>/config.json`)
+Official releases are created manually with GitHub Actions workflow **Release**.
 
-```json
-{
-  "autosave_interval_seconds": 5,
-  "snapshot_interval_minutes": 10,
-  "search_paths": ["scratch", "inbox", "slack"],
-  "remind_enabled": false,
-  "slack_enabled": false,
-  "mcp_enabled": false,
-  "mcp_readonly": true,
-  "force_markdown_extension": true,
-  "auto_replace_scratch_tab_with_file": true,
-  "syntax_extension_map": {
-    "Plain Text": "md",
-    "Markdown": "md",
-    "Python": "py",
-    "JSON": "json",
-    "Shell": "sh"
-  },
-  "runblock": {
-    "python_bin": "python",
-    "shell": "bash"
-  }
-}
-```
+Required input:
 
-## Notes
+- `version`: SemVer tag (example: `v0.1.0`)
 
-- Sublime plugin performs all file/network/CLI work in async contexts.
-- Run-block requires an on-disk file; margin-managed scratch files are persisted under `scratch/current/`.
-- Slack token is read from env (`SLACK_TOKEN` by default) and never written to disk.
+The workflow will create and push the tag, build binaries, and create a GitHub release
+with generated release notes that include commits in the release window.
+
+## Release binaries
+
+Release artifacts are built for:
+
+- Linux: `amd64`, `arm64`
+- macOS: `amd64`, `arm64`
+- Windows: `amd64`, `arm64`

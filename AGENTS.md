@@ -17,4 +17,3 @@
 
 - all commit messages must be prefixed with "ai slop: "
 - *never* bypass pre-commit hooks
-

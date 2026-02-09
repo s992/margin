@@ -54,7 +54,9 @@ def _default_root():
     plat = sublime.platform()
     home = os.path.expanduser("~")
     if plat == "windows":
-        return os.path.join(os.getenv("APPDATA", os.path.join(home, "AppData", "Roaming")), "Margin")
+        return os.path.join(
+            os.getenv("APPDATA", os.path.join(home, "AppData", "Roaming")), "Margin"
+        )
     if plat == "osx":
         return os.path.join(home, "Library", "Application Support", "Margin")
     return os.path.join(home, ".local", "share", "margin")
@@ -79,7 +81,10 @@ def _load_config():
         except Exception:
             pass
     cfg["auto_replace_scratch_tab_with_file"] = bool(
-        _settings().get("margin_auto_replace_scratch_tab_with_file", cfg.get("auto_replace_scratch_tab_with_file", True))
+        _settings().get(
+            "margin_auto_replace_scratch_tab_with_file",
+            cfg.get("auto_replace_scratch_tab_with_file", True),
+        )
     )
     return cfg
 
@@ -218,7 +223,9 @@ def _cli_path():
     if explicit and os.path.isfile(explicit):
         return explicit
     root = _margin_root()
-    candidate = os.path.join(root, "bin", "margin.exe" if sublime.platform() == "windows" else "margin")
+    candidate = os.path.join(
+        root, "bin", "margin.exe" if sublime.platform() == "windows" else "margin"
+    )
     if os.path.isfile(candidate):
         return candidate
     return shutil.which("margin")
@@ -252,10 +259,7 @@ def _run_process(cmd, stdin_text=None):
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         popen_kwargs["startupinfo"] = startupinfo
         popen_kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-    proc = subprocess.Popen(
-        cmd,
-        **popen_kwargs
-    )
+    proc = subprocess.Popen(cmd, **popen_kwargs)
     in_bytes = None
     if stdin_text is not None:
         in_bytes = stdin_text.encode("utf-8")
@@ -376,7 +380,9 @@ def _move_to_trash(path):
             raise RuntimeError((err or "").strip() or "Failed to move file to Recycle Bin")
         return
     if plat == "osx":
-        code, _, err = _run_process(["osascript", "-e", 'tell application "Finder" to delete POSIX file "{}"'.format(path)])
+        code, _, err = _run_process(
+            ["osascript", "-e", 'tell application "Finder" to delete POSIX file "{}"'.format(path)]
+        )
         if code != 0:
             raise RuntimeError((err or "").strip() or "Failed to move file to Trash")
         return
@@ -428,10 +434,18 @@ class MarginSearchCommand(sublime_plugin.WindowCommand):
                 return
             if not isinstance(res, list):
                 print("Margin search invalid response type: {}".format(type(res)))
-                sublime.set_timeout(lambda: sublime.error_message("Margin search returned invalid response."), 0)
+                sublime.set_timeout(
+                    lambda: sublime.error_message("Margin search returned invalid response."), 0
+                )
                 return
             print("Margin search results: {}".format(len(res)))
-            items = [["{}:{}".format(r.get("file"), r.get("line")), "{}  {}".format(r.get("preview", ""), r.get("mtime", ""))] for r in res]
+            items = [
+                [
+                    "{}:{}".format(r.get("file"), r.get("line")),
+                    "{}  {}".format(r.get("preview", ""), r.get("mtime", "")),
+                ]
+                for r in res
+            ]
 
             def show_panel():
                 if not items:
@@ -537,7 +551,9 @@ class MarginRunBlockCommand(sublime_plugin.WindowCommand):
     def run(self):
         global _RUNBLOCK_CONSENT
         if _RUNBLOCK_CONSENT is None:
-            allowed = sublime.ok_cancel_dialog("Margin will run code blocks using local interpreters for this session. Continue?")
+            allowed = sublime.ok_cancel_dialog(
+                "Margin will run code blocks using local interpreters for this session. Continue?"
+            )
             if allowed:
                 _RUNBLOCK_CONSENT = True
             else:
@@ -579,15 +595,17 @@ class MarginRunBlockCommand(sublime_plugin.WindowCommand):
         def worker():
             try:
                 print("Margin run-block: file={!r} point={}".format(file_path, point))
-                res = _run_cli_json([
-                    "run-block",
-                    "--file",
-                    file_path,
-                    "--cursor",
-                    str(point),
-                    "--root",
-                    root,
-                ])
+                res = _run_cli_json(
+                    [
+                        "run-block",
+                        "--file",
+                        file_path,
+                        "--cursor",
+                        str(point),
+                        "--root",
+                        root,
+                    ]
+                )
             except Exception as exc:
                 msg = str(exc)
                 print("Margin run-block error: {}".format(msg))
@@ -638,20 +656,22 @@ class MarginSlackCaptureCommand(sublime_plugin.WindowCommand):
 
         def worker():
             try:
-                res = _run_cli_json([
-                    "slack",
-                    "capture",
-                    "--channel",
-                    self.channel,
-                    "--thread",
-                    self.thread,
-                    "--root",
-                    _margin_root(),
-                    "--token-env",
-                    "SLACK_TOKEN",
-                    "--format",
-                    "markdown",
-                ])
+                res = _run_cli_json(
+                    [
+                        "slack",
+                        "capture",
+                        "--channel",
+                        self.channel,
+                        "--thread",
+                        self.thread,
+                        "--root",
+                        _margin_root(),
+                        "--token-env",
+                        "SLACK_TOKEN",
+                        "--format",
+                        "markdown",
+                    ]
+                )
             except Exception as exc:
                 msg = str(exc)
                 sublime.set_timeout(lambda m=msg: sublime.error_message(m), 0)
@@ -690,20 +710,22 @@ class MarginSlackCaptureFromClipboardCommand(sublime_plugin.WindowCommand):
 
         def worker():
             try:
-                res = _run_cli_json([
-                    "slack",
-                    "capture",
-                    "--channel",
-                    channel,
-                    "--thread",
-                    link,
-                    "--root",
-                    _margin_root(),
-                    "--token-env",
-                    "SLACK_TOKEN",
-                    "--format",
-                    "markdown",
-                ])
+                res = _run_cli_json(
+                    [
+                        "slack",
+                        "capture",
+                        "--channel",
+                        channel,
+                        "--thread",
+                        link,
+                        "--root",
+                        _margin_root(),
+                        "--token-env",
+                        "SLACK_TOKEN",
+                        "--format",
+                        "markdown",
+                    ]
+                )
             except Exception as exc:
                 msg = str(exc)
                 sublime.set_timeout(lambda m=msg: sublime.error_message(m), 0)
@@ -747,7 +769,9 @@ class MarginAskLlmCommand(sublime_plugin.WindowCommand):
             return
         self.mode_idx = idx
         if idx == 2:
-            self.window.show_input_panel("Related notes query", "", self._on_related_query, None, None)
+            self.window.show_input_panel(
+                "Related notes query", "", self._on_related_query, None, None
+            )
             return
         self._run_with_context(None)
 
@@ -768,22 +792,26 @@ class MarginAskLlmCommand(sublime_plugin.WindowCommand):
             global _LAST_LLM_ANSWER
             if self.mode_idx == 2 and related_query:
                 try:
-                    rows = _run_cli_json([
-                        "search",
-                        "--query",
-                        related_query,
-                        "--limit",
-                        "8",
-                        "--root",
-                        _margin_root(),
-                    ])
+                    rows = _run_cli_json(
+                        [
+                            "search",
+                            "--query",
+                            related_query,
+                            "--limit",
+                            "8",
+                            "--root",
+                            _margin_root(),
+                        ]
+                    )
                 except Exception:
                     rows = []
                 for row in rows:
-                    related.append({
-                        "path": row.get("file", ""),
-                        "excerpt": row.get("preview", ""),
-                    })
+                    related.append(
+                        {
+                            "path": row.get("file", ""),
+                            "excerpt": row.get("preview", ""),
+                        }
+                    )
             payload = {
                 "question": self.question,
                 "selection": selection_text if self.mode_idx == 0 else "",
@@ -794,7 +822,9 @@ class MarginAskLlmCommand(sublime_plugin.WindowCommand):
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     json.dump(payload, fh)
-                code, out_s, err_s = _run_process([self.client_path] + list(self.client_args) + [temp_path])
+                code, out_s, err_s = _run_process(
+                    [self.client_path] + list(self.client_args) + [temp_path]
+                )
                 out = out_s.strip()
                 if code != 0:
                     out = err_s.strip() or "LLM client failed"
@@ -807,7 +837,10 @@ class MarginAskLlmCommand(sublime_plugin.WindowCommand):
                 panel.set_read_only(False)
                 panel.run_command("select_all")
                 panel.run_command("right_delete")
-                panel.run_command("append", {"characters": _LAST_LLM_ANSWER + "\n", "force": True, "scroll_to_end": False})
+                panel.run_command(
+                    "append",
+                    {"characters": _LAST_LLM_ANSWER + "\n", "force": True, "scroll_to_end": False},
+                )
                 panel.set_read_only(True)
                 self.window.run_command("show_panel", {"panel": "output.margin_llm"})
 

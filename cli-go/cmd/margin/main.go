@@ -17,9 +17,20 @@ import (
 	"margin/internal/slackcap"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
-	if len(os.Args) < 2 {
-		fatalf(2, "usage: margin <subcommand>")
+	if len(os.Args) < 2 || os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v" {
+		writeJSON(map[string]string{
+			"version": version,
+			"commit":  commit,
+			"date":    date,
+		})
+		return
 	}
 	sub := os.Args[1]
 	args := os.Args[2:]
