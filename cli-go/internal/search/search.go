@@ -3,21 +3,18 @@ package search
 import (
 	"bufio"
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/blevesearch/bleve/v2"
 
 	"margin/internal/rootio"
 )
 
 const (
-	ripgrepTimeout    = 20 * time.Second
 	maxScannerToken   = 1024 * 1024
 	defaultResultSize = 64
 )
@@ -28,22 +25,6 @@ type Result struct {
 	Col     int    `json:"col"`
 	Preview string `json:"preview"`
 	Mtime   string `json:"mtime"`
-}
-
-type rgEvent struct {
-	Type string `json:"type"`
-	Data struct {
-		Path struct {
-			Text string `json:"text"`
-		} `json:"path"`
-		LineNumber int `json:"line_number"`
-		Submatches []struct {
-			Start int `json:"start"`
-		} `json:"submatches"`
-		Lines struct {
-			Text string `json:"text"`
-		} `json:"lines"`
-	} `json:"data"`
 }
 
 func Run(ctx context.Context, root, query string, groups []string, limit int) ([]Result, error) {
@@ -57,93 +38,125 @@ func Run(ctx context.Context, root, query string, groups []string, limit int) ([
 	if len(paths) == 0 {
 		return []Result{}, nil
 	}
-	if _, err := exec.LookPath("rg"); err == nil {
-		res, err := runRipgrep(ctx, root, query, paths, limit)
-		if err == nil {
-			return res, nil
-		}
+	res, err := runBleve(ctx, root, query, paths, limit)
+	if err == nil {
+		return res, nil
 	}
 	return runFallback(ctx, root, query, paths, limit)
 }
 
-func runRipgrep(ctx context.Context, root, query string, paths []string, limit int) ([]Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, ripgrepTimeout)
-	defer cancel()
+type bleveLineDoc struct {
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Preview string `json:"preview"`
+	Content string `json:"content"`
+	Mtime   string `json:"mtime"`
+}
 
-	args := []string{"--json", "--line-number", "--column", "--no-heading", "--smart-case", query}
-	args = append(args, paths...)
-	cmd := exec.CommandContext(ctx, "rg", args...)
-	stdout, err := cmd.StdoutPipe()
+func runBleve(ctx context.Context, root, query string, paths []string, limit int) ([]Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	files, err := rootio.ListFilesRecursive(paths)
 	if err != nil {
 		return nil, err
 	}
-	stderr, err := cmd.StderrPipe()
+	index, err := bleve.NewMemOnly(bleve.NewIndexMapping())
 	if err != nil {
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	results := make([]Result, 0, defaultResultSize)
-	s := bufio.NewScanner(stdout)
-	s.Buffer(make([]byte, 64*1024), maxScannerToken)
-	for s.Scan() {
+	defer func() {
+		_ = index.Close()
+	}()
+	for _, f := range files {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		line := s.Bytes()
-		var ev rgEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
-			continue
-		}
-		if ev.Type != "match" {
-			continue
-		}
-		col := 1
-		if len(ev.Data.Submatches) > 0 {
-			col = ev.Data.Submatches[0].Start + 1
+		rel, err := rootio.RelUnderRoot(root, f)
+		if err != nil {
+			rel = filepath.ToSlash(f)
 		}
 		mtime := ""
-		if st, err := os.Stat(ev.Data.Path.Text); err == nil {
+		if st, err := os.Stat(f); err == nil {
 			mtime = st.ModTime().Format(time.RFC3339)
 		}
-		rel, err := rootio.RelUnderRoot(root, ev.Data.Path.Text)
+		fh, err := os.Open(f)
 		if err != nil {
-			rel = filepath.ToSlash(ev.Data.Path.Text)
+			continue
 		}
-		results = append(results, Result{
-			File:    rel,
-			Line:    ev.Data.LineNumber,
-			Col:     col,
-			Preview: strings.TrimSpace(ev.Data.Lines.Text),
-			Mtime:   mtime,
-		})
-		if limit > 0 && len(results) >= limit {
-			break
-		}
-	}
-	if err := s.Err(); err != nil {
-		return nil, fmt.Errorf("scan rg output: %w", err)
-	}
-	stderrBytes, _ := io.ReadAll(stderr)
-	err = cmd.Wait()
-	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, fmt.Errorf("rg timeout after %s", ripgrepTimeout)
-		}
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return nil, ctx.Err()
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			if exitErr.ExitCode() == 1 {
-				return results, nil
+		s := bufio.NewScanner(fh)
+		s.Buffer(make([]byte, 64*1024), maxScannerToken)
+		ln := 0
+		for s.Scan() {
+			if err := ctx.Err(); err != nil {
+				_ = fh.Close()
+				return nil, err
+			}
+			ln++
+			lineText := s.Text()
+			doc := bleveLineDoc{
+				File:    rel,
+				Line:    ln,
+				Preview: strings.TrimSpace(lineText),
+				Content: lineText,
+				Mtime:   mtime,
+			}
+			if err := index.Index(rel+":"+strconv.Itoa(ln), doc); err != nil {
+				_ = fh.Close()
+				return nil, err
 			}
 		}
-		return nil, fmt.Errorf("rg failed: %s", strings.TrimSpace(string(stderrBytes)))
+		_ = fh.Close()
 	}
-	return results, nil
+
+	q := bleve.NewMatchQuery(query)
+	q.SetField("content")
+	size := limit
+	if size <= 0 {
+		size = 50
+	}
+	req := bleve.NewSearchRequestOptions(q, size, 0, false)
+	req.Fields = []string{"file", "line", "preview", "mtime", "content"}
+	res, err := index.SearchInContext(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Result, 0, len(res.Hits))
+	for _, hit := range res.Hits {
+		fields := hit.Fields
+		file, _ := fields["file"].(string)
+		preview, _ := fields["preview"].(string)
+		mtime, _ := fields["mtime"].(string)
+		content, _ := fields["content"].(string)
+		line := int(numberField(fields["line"]))
+		col := strings.Index(strings.ToLower(content), strings.ToLower(query)) + 1
+		if col <= 0 {
+			col = 1
+		}
+		out = append(out, Result{
+			File:    file,
+			Line:    line,
+			Col:     col,
+			Preview: preview,
+			Mtime:   mtime,
+		})
+	}
+	return out, nil
+}
+
+func numberField(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	default:
+		return 0
+	}
 }
 
 func runFallback(ctx context.Context, root, query string, paths []string, limit int) ([]Result, error) {

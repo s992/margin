@@ -1,8 +1,6 @@
 package mcpserver
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,54 +9,66 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"margin/internal/rootio"
 	"margin/internal/search"
 )
 
 const (
-	protocolVersion       = "2024-11-05"
-	serverVersion         = "0.1.0"
-	defaultSearchLimit    = 20
-	defaultRecentLimit    = 20
-	maxToolLimit          = 500
-	maxIncomingMessageLen = 4 << 20
+	serverVersion      = "0.1.0"
+	defaultSearchLimit = 20
+	defaultRecentLimit = 20
+	maxToolLimit       = 500
 )
 
 type Server struct {
 	Root     string
 	Readonly bool
 	Paths    []string
-	in       *bufio.Reader
+	in       io.Reader
 	out      io.Writer
-}
-
-type rpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type rpcResponse struct {
-	JSONRPC string    `json:"jsonrpc"`
-	ID      any       `json:"id,omitempty"`
-	Result  any       `json:"result,omitempty"`
-	Error   *rpcError `json:"error,omitempty"`
-}
-
-type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
 }
 
 type RecentItem struct {
 	Path    string `json:"path"`
 	Mtime   string `json:"mtime"`
 	Preview string `json:"preview"`
+}
+
+type searchArgs struct {
+	Query string   `json:"query"`
+	Limit int      `json:"limit,omitempty"`
+	Paths []string `json:"paths,omitempty"`
+}
+
+type readFileArgs struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line,omitempty"`
+	EndLine   int    `json:"end_line,omitempty"`
+}
+
+type recentArgs struct {
+	Limit int    `json:"limit,omitempty"`
+	Since string `json:"since,omitempty"`
+}
+
+type appendArgs struct {
+	Path    string `json:"path,omitempty"`
+	Content string `json:"content"`
+}
+
+type readFileOutput struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type appendOutput struct {
+	Path     string `json:"path"`
+	Appended int    `json:"appended"`
 }
 
 func New(root string, readonly bool, paths []string) *Server {
@@ -70,273 +80,204 @@ func NewWithIO(root string, readonly bool, paths []string, in io.Reader, out io.
 		Root:     root,
 		Readonly: readonly,
 		Paths:    paths,
-		in:       bufio.NewReader(in),
+		in:       in,
 		out:      out,
 	}
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		msg, err := s.readMessage()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		var req rpcRequest
-		if err := json.Unmarshal(msg, &req); err != nil {
-			continue
-		}
-		if req.Method == "" {
-			continue
-		}
-		if req.ID == nil {
-			_ = s.handleNotification(ctx, req)
-			continue
-		}
-		resp := rpcResponse{JSONRPC: "2.0", ID: req.ID}
-		result, rpcErr := s.handleRequest(ctx, req)
-		if rpcErr != nil {
-			resp.Error = rpcErr
-		} else {
-			resp.Result = result
-		}
-		if err := s.writeMessage(resp); err != nil {
-			return err
-		}
-	}
-}
-
-func (s *Server) handleNotification(ctx context.Context, req rpcRequest) error {
-	return ctx.Err()
-}
-
-func (s *Server) handleRequest(ctx context.Context, req rpcRequest) (any, *rpcError) {
 	if err := ctx.Err(); err != nil {
-		return nil, &rpcError{Code: -32800, Message: err.Error()}
+		return err
 	}
-	switch req.Method {
-	case "initialize":
-		return map[string]any{
-			"protocolVersion": protocolVersion,
-			"capabilities": map[string]any{
-				"tools": map[string]any{},
-			},
-			"serverInfo": map[string]any{
-				"name":    "margin",
-				"version": serverVersion,
-			},
-		}, nil
-	case "ping":
-		return map[string]any{}, nil
-	case "tools/list":
-		return map[string]any{"tools": s.toolSpecs()}, nil
-	case "tools/call":
-		var p struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		if err := json.Unmarshal(req.Params, &p); err != nil {
-			return nil, &rpcError{Code: -32602, Message: err.Error()}
-		}
-		if p.Name == "" {
-			return nil, &rpcError{Code: -32602, Message: "name is required"}
-		}
-		if p.Arguments == nil {
-			p.Arguments = map[string]any{}
-		}
-		return s.callTool(ctx, p.Name, p.Arguments)
-	default:
-		return nil, &rpcError{Code: -32601, Message: "method not found"}
-	}
-}
+	srv := mcp.NewServer(&mcp.Implementation{Name: "margin", Version: serverVersion}, nil)
 
-func (s *Server) toolSpecs() []map[string]any {
-	tools := []map[string]any{
-		{
-			"name":        "search",
-			"description": "Search notes",
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"query": map[string]any{"type": "string"},
-					"limit": map[string]any{"type": "number"},
-					"paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-				},
-				"required": []string{"query"},
-			},
-		},
-		{
-			"name":        "read_file",
-			"description": "Read file under margin root",
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path":       map[string]any{"type": "string"},
-					"start_line": map[string]any{"type": "number"},
-					"end_line":   map[string]any{"type": "number"},
-				},
-				"required": []string{"path"},
-			},
-		},
-		{
-			"name":        "recent",
-			"description": "List recent files",
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"limit": map[string]any{"type": "number"},
-					"since": map[string]any{"type": "string"},
-				},
-			},
-		},
-	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "search",
+		Description: "Search notes",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input searchArgs) (*mcp.CallToolResult, []search.Result, error) {
+		res, err := s.searchTool(ctx, input)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, res, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "read_file",
+		Description: "Read file under margin root",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input readFileArgs) (*mcp.CallToolResult, readFileOutput, error) {
+		res, err := s.readFileTool(ctx, input)
+		if err != nil {
+			return nil, readFileOutput{}, err
+		}
+		return nil, res, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "recent",
+		Description: "List recent files",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input recentArgs) (*mcp.CallToolResult, []RecentItem, error) {
+		res, err := s.recentTool(ctx, input)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, res, nil
+	})
+
 	if !s.Readonly {
-		tools = append(tools, map[string]any{
-			"name":        "append",
-			"description": "Append text under scratch/inbox/slack",
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path":    map[string]any{"type": "string"},
-					"content": map[string]any{"type": "string"},
-				},
-				"required": []string{"content"},
-			},
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "append",
+			Description: "Append text under scratch/inbox/slack",
+		}, func(ctx context.Context, _ *mcp.CallToolRequest, input appendArgs) (*mcp.CallToolResult, appendOutput, error) {
+			res, err := s.appendTool(ctx, input)
+			if err != nil {
+				return nil, appendOutput{}, err
+			}
+			return nil, res, nil
 		})
 	}
-	return tools
+
+	in := s.in
+	if in == nil {
+		in = os.Stdin
+	}
+	out := s.out
+	if out == nil {
+		out = os.Stdout
+	}
+	transport := &mcp.IOTransport{
+		Reader: io.NopCloser(in),
+		Writer: nopWriteCloser{Writer: out},
+	}
+	return srv.Run(ctx, transport)
 }
 
-func (s *Server) callTool(ctx context.Context, name string, args map[string]any) (any, *rpcError) {
+func (s *Server) searchTool(ctx context.Context, args searchArgs) ([]search.Result, error) {
 	if err := ctx.Err(); err != nil {
-		return toolError(err), nil
+		return nil, err
 	}
-	switch name {
-	case "search":
-		query, _ := args["query"].(string)
-		if strings.TrimSpace(query) == "" {
-			return toolError(errors.New("query is required")), nil
-		}
-		limit := clampedLimit(args["limit"], defaultSearchLimit)
-		paths := stringSliceArg(args["paths"])
-		if len(paths) == 0 {
-			paths = s.Paths
-		}
-		res, err := search.Run(ctx, s.Root, query, paths, limit)
-		if err != nil {
-			return toolError(err), nil
-		}
-		return toolResult(res), nil
-	case "read_file":
-		p, _ := args["path"].(string)
-		if strings.TrimSpace(p) == "" {
-			return toolError(errors.New("path is required")), nil
-		}
-		abs, err := s.safePath(p)
-		if err != nil {
-			return toolError(err), nil
-		}
-		data, err := os.ReadFile(abs)
-		if err != nil {
-			return toolError(err), nil
-		}
-		content := string(data)
-		start := int(numberArg(args["start_line"], 0))
-		end := int(numberArg(args["end_line"], 0))
-		if start > 0 || end > 0 {
-			lines := strings.Split(content, "\n")
-			if start < 1 {
-				start = 1
-			}
-			if end <= 0 || end > len(lines) {
-				end = len(lines)
-			}
-			if start <= end && start <= len(lines) {
-				content = strings.Join(lines[start-1:end], "\n")
-			} else {
-				content = ""
-			}
-		}
-		return toolResult(map[string]any{"path": filepath.ToSlash(p), "content": content}), nil
-	case "recent":
-		limit := clampedLimit(args["limit"], defaultRecentLimit)
-		sinceRaw, _ := args["since"].(string)
-		var since time.Time
-		if sinceRaw != "" {
-			t, err := time.Parse(time.RFC3339, sinceRaw)
-			if err == nil {
-				since = t
-			}
-		}
-		files, err := rootio.ListFilesRecursive(rootio.ResolvePathGroups(s.Root, s.Paths))
-		if err != nil {
-			return toolError(err), nil
-		}
-		items := make([]RecentItem, 0, len(files))
-		for _, f := range files {
-			if err := ctx.Err(); err != nil {
-				return toolError(err), nil
-			}
-			st, err := os.Stat(f)
-			if err != nil {
-				continue
-			}
-			if !since.IsZero() && st.ModTime().Before(since) {
-				continue
-			}
-			data, _ := os.ReadFile(f)
-			preview := strings.TrimSpace(firstLine(string(data)))
-			if len(preview) > 180 {
-				preview = preview[:180]
-			}
-			rel, _ := rootio.RelUnderRoot(s.Root, f)
-			items = append(items, RecentItem{Path: rel, Mtime: st.ModTime().Format(time.RFC3339), Preview: preview})
-		}
-		sortByMtimeDesc(items)
-		if len(items) > limit {
-			items = items[:limit]
-		}
-		return toolResult(items), nil
-	case "append":
-		if s.Readonly {
-			return toolError(errors.New("readonly mode")), nil
-		}
-		content, _ := args["content"].(string)
-		if strings.TrimSpace(content) == "" {
-			return toolError(errors.New("content is required")), nil
-		}
-		p, _ := args["path"].(string)
-		if p == "" {
-			p = filepath.ToSlash(filepath.Join("inbox", time.Now().Format("20060102T150405")+".md"))
-		}
-		abs, err := s.safeAppendPath(p)
-		if err != nil {
-			return toolError(err), nil
-		}
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			return toolError(err), nil
-		}
-		fh, err := os.OpenFile(abs, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return toolError(err), nil
-		}
-		if _, err := fh.WriteString(content); err != nil {
-			_ = fh.Close()
-			return toolError(err), nil
-		}
-		if err := fh.Close(); err != nil {
-			return toolError(err), nil
-		}
-		rel, _ := rootio.RelUnderRoot(s.Root, abs)
-		return toolResult(map[string]any{"path": rel, "appended": len(content)}), nil
-	default:
-		return nil, &rpcError{Code: -32602, Message: "unknown tool"}
+	if strings.TrimSpace(args.Query) == "" {
+		return nil, errors.New("query is required")
 	}
+	limit := clampedLimit(float64(args.Limit), defaultSearchLimit)
+	paths := args.Paths
+	if len(paths) == 0 {
+		paths = s.Paths
+	}
+	return search.Run(ctx, s.Root, args.Query, paths, limit)
+}
+
+func (s *Server) readFileTool(ctx context.Context, args readFileArgs) (readFileOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return readFileOutput{}, err
+	}
+	if strings.TrimSpace(args.Path) == "" {
+		return readFileOutput{}, errors.New("path is required")
+	}
+	abs, err := s.safePath(args.Path)
+	if err != nil {
+		return readFileOutput{}, err
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return readFileOutput{}, err
+	}
+	content := string(data)
+	start, end := args.StartLine, args.EndLine
+	if start > 0 || end > 0 {
+		lines := strings.Split(content, "\n")
+		if start < 1 {
+			start = 1
+		}
+		if end <= 0 || end > len(lines) {
+			end = len(lines)
+		}
+		if start <= end && start <= len(lines) {
+			content = strings.Join(lines[start-1:end], "\n")
+		} else {
+			content = ""
+		}
+	}
+	return readFileOutput{Path: filepath.ToSlash(args.Path), Content: content}, nil
+}
+
+func (s *Server) recentTool(ctx context.Context, args recentArgs) ([]RecentItem, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	limit := clampedLimit(float64(args.Limit), defaultRecentLimit)
+	var since time.Time
+	if args.Since != "" {
+		t, err := time.Parse(time.RFC3339, args.Since)
+		if err == nil {
+			since = t
+		}
+	}
+	files, err := rootio.ListFilesRecursive(rootio.ResolvePathGroups(s.Root, s.Paths))
+	if err != nil {
+		return nil, err
+	}
+	items := make([]RecentItem, 0, len(files))
+	for _, f := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		st, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+		if !since.IsZero() && st.ModTime().Before(since) {
+			continue
+		}
+		data, _ := os.ReadFile(f)
+		preview := strings.TrimSpace(firstLine(string(data)))
+		if len(preview) > 180 {
+			preview = preview[:180]
+		}
+		rel, _ := rootio.RelUnderRoot(s.Root, f)
+		items = append(items, RecentItem{Path: rel, Mtime: st.ModTime().Format(time.RFC3339), Preview: preview})
+	}
+	sortByMtimeDesc(items)
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+func (s *Server) appendTool(ctx context.Context, args appendArgs) (appendOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return appendOutput{}, err
+	}
+	if s.Readonly {
+		return appendOutput{}, errors.New("readonly mode")
+	}
+	if strings.TrimSpace(args.Content) == "" {
+		return appendOutput{}, errors.New("content is required")
+	}
+	p := args.Path
+	if p == "" {
+		p = filepath.ToSlash(filepath.Join("inbox", time.Now().Format("20060102T150405")+".md"))
+	}
+	abs, err := s.safeAppendPath(p)
+	if err != nil {
+		return appendOutput{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return appendOutput{}, err
+	}
+	fh, err := os.OpenFile(abs, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return appendOutput{}, err
+	}
+	if _, err := fh.WriteString(args.Content); err != nil {
+		_ = fh.Close()
+		return appendOutput{}, err
+	}
+	if err := fh.Close(); err != nil {
+		return appendOutput{}, err
+	}
+	rel, _ := rootio.RelUnderRoot(s.Root, abs)
+	return appendOutput{Path: rel, Appended: len(args.Content)}, nil
 }
 
 func (s *Server) safePath(rel string) (string, error) {
@@ -381,41 +322,10 @@ func numberArg(v any, def float64) float64 {
 	case json.Number:
 		f, _ := t.Float64()
 		return f
+	case int:
+		return float64(t)
 	default:
 		return def
-	}
-}
-
-func stringSliceArg(v any) []string {
-	raw, ok := v.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(raw))
-	for _, e := range raw {
-		if s, ok := e.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func toolResult(v any) map[string]any {
-	b, err := json.Marshal(v)
-	if err != nil {
-		b = []byte(`{"error":"serialization failed"}`)
-	}
-	return map[string]any{
-		"content":           []map[string]any{{"type": "text", "text": string(b)}},
-		"structuredContent": v,
-		"isError":           false,
-	}
-}
-
-func toolError(err error) map[string]any {
-	return map[string]any{
-		"content": []map[string]any{{"type": "text", "text": err.Error()}},
-		"isError": true,
 	}
 }
 
@@ -432,53 +342,8 @@ func firstLine(s string) string {
 	return s
 }
 
-func (s *Server) readMessage() ([]byte, error) {
-	length := -1
-	for {
-		line, err := s.in.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			break
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(parts[0]), "Content-Length") {
-			v, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-			if err == nil {
-				length = v
-			}
-		}
-	}
-	if length < 0 {
-		return nil, fmt.Errorf("missing content-length")
-	}
-	if length == 0 {
-		return nil, fmt.Errorf("invalid content-length: 0")
-	}
-	if length > maxIncomingMessageLen {
-		return nil, fmt.Errorf("content-length exceeds max allowed size")
-	}
-	buf := make([]byte, length)
-	if _, err := io.ReadFull(s.in, buf); err != nil {
-		return nil, err
-	}
-	return buf, nil
+type nopWriteCloser struct {
+	io.Writer
 }
 
-func (s *Server) writeMessage(v any) error {
-	body, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	headers := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
-	if _, err := io.Copy(s.out, bytes.NewBufferString(headers)); err != nil {
-		return err
-	}
-	_, err = s.out.Write(body)
-	return err
-}
+func (nopWriteCloser) Close() error { return nil }

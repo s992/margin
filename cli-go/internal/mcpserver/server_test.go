@@ -1,26 +1,14 @@
 package mcpserver
 
 import (
-	"bufio"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestReadMessageRejectsOversizedPayload(t *testing.T) {
-	raw := "Content-Length: 9999999\r\n\r\n"
-	srv := NewWithIO(t.TempDir(), true, nil, strings.NewReader(raw), &strings.Builder{})
-	_, err := srv.readMessage()
-	if err == nil || !strings.Contains(err.Error(), "exceeds max") {
-		t.Fatalf("expected size error, got: %v", err)
-	}
-}
-
 func TestSafeAppendPathRestrictsTargets(t *testing.T) {
-	srv := NewWithIO(t.TempDir(), false, nil, strings.NewReader(""), &strings.Builder{})
+	srv := NewWithIO(t.TempDir(), false, nil, nil, nil)
 	if _, err := srv.safeAppendPath("inbox/test.md"); err != nil {
 		t.Fatalf("expected inbox path to be allowed: %v", err)
 	}
@@ -29,18 +17,11 @@ func TestSafeAppendPathRestrictsTargets(t *testing.T) {
 	}
 }
 
-func TestCallToolSearchRequiresQuery(t *testing.T) {
-	srv := NewWithIO(t.TempDir(), true, []string{"inbox"}, strings.NewReader(""), &strings.Builder{})
-	res, rpcErr := srv.callTool(context.Background(), "search", map[string]any{})
-	if rpcErr != nil {
-		t.Fatalf("unexpected rpc error: %v", rpcErr)
-	}
-	data, ok := res.(map[string]any)
-	if !ok {
-		t.Fatalf("unexpected response type: %T", res)
-	}
-	if isErr, _ := data["isError"].(bool); !isErr {
-		t.Fatalf("expected isError response: %#v", data)
+func TestSearchToolRequiresQuery(t *testing.T) {
+	srv := NewWithIO(t.TempDir(), true, []string{"inbox"}, nil, nil)
+	_, err := srv.searchTool(context.Background(), searchArgs{})
+	if err == nil {
+		t.Fatal("expected query error")
 	}
 }
 
@@ -56,16 +37,22 @@ func TestClampedLimit(t *testing.T) {
 	}
 }
 
-func TestReadMessageRoundTrip(t *testing.T) {
-	body := `{"jsonrpc":"2.0","method":"ping"}`
-	raw := fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(body), body)
-	srv := &Server{in: bufio.NewReader(strings.NewReader(raw))}
-	msg, err := srv.readMessage()
+func TestReadFileToolWithLineRange(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "inbox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "inbox", "note.md")
+	if err := os.WriteFile(path, []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewWithIO(root, true, nil, nil, nil)
+	out, err := srv.readFileTool(context.Background(), readFileArgs{Path: "inbox/note.md", StartLine: 2, EndLine: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(msg) != body {
-		t.Fatalf("unexpected body: %s", string(msg))
+	if out.Content != "b\nc" {
+		t.Fatalf("unexpected content: %q", out.Content)
 	}
 }
 
@@ -76,17 +63,9 @@ func TestAppendWriteErrorsPropagate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := NewWithIO(root, false, []string{"inbox"}, strings.NewReader(""), &strings.Builder{})
-	res, rpcErr := srv.callTool(context.Background(), "append", map[string]any{"path": "inbox/test.md", "content": "hello"})
-	if rpcErr != nil {
-		t.Fatalf("unexpected rpc error: %v", rpcErr)
-	}
-	m, ok := res.(map[string]any)
-	if !ok {
-		t.Fatalf("unexpected response type: %T", res)
-	}
-	isErr, _ := m["isError"].(bool)
-	if !isErr {
-		t.Fatalf("expected write error result, got %#v", m)
+	srv := NewWithIO(root, false, []string{"inbox"}, nil, nil)
+	_, err := srv.appendTool(context.Background(), appendArgs{Path: "inbox/test.md", Content: "hello"})
+	if err == nil {
+		t.Fatal("expected write error")
 	}
 }

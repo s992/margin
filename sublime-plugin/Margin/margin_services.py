@@ -4,6 +4,10 @@ import shutil
 import subprocess
 
 import sublime
+try:
+    from send2trash import send2trash as _send2trash
+except Exception:
+    _send2trash = None
 
 try:
     from .margin_settings import CLI_TIMEOUT_SECONDS, margin_root, safe_int, settings
@@ -76,6 +80,13 @@ def run_cli_json(args):
 def move_to_trash(path):
     if not path or not os.path.exists(path):
         raise RuntimeError("File does not exist: {}".format(path))
+    if _send2trash is not None:
+        try:
+            _send2trash(path)
+            return
+        except Exception:
+            # Fall back to platform-specific commands when send2trash is unavailable at runtime.
+            pass
     plat = sublime.platform()
     if plat == "windows":
         escaped = path.replace("'", "''")

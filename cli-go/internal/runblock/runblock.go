@@ -8,20 +8,20 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/shlex"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
 
 	"margin/internal/config"
 )
 
 const executionTimeout = 30 * time.Second
-
-var fenceRe = regexp.MustCompile("(?m)^[ \\t]{0,3}```([A-Za-z0-9_+-]*)[ \\t]*\\r?$")
 
 type Block struct {
 	Language     string
@@ -92,59 +92,110 @@ func Run(ctx context.Context, filePath string, cursor int, cfg config.RunBlockCo
 }
 
 func ParseBlocks(s string) []Block {
-	matches := fenceRe.FindAllStringSubmatchIndex(s, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-	blocks := make([]Block, 0, len(matches)/2)
-	for i := 0; i < len(matches); i++ {
-		startIdx := matches[i][0]
-		langStart, langEnd := matches[i][2], matches[i][3]
-		lineEnd := strings.IndexByte(s[startIdx:], '\n')
-		if lineEnd < 0 {
-			continue
+	src := []byte(s)
+	doc := goldmark.New().Parser().Parse(text.NewReader(src))
+	blocks := make([]Block, 0)
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
 		}
-		codeStart := startIdx + lineEnd + 1
-		closingStart := findClosingFence(s, codeStart)
-		if closingStart < 0 {
-			continue
+		fb, ok := n.(*ast.FencedCodeBlock)
+		if !ok {
+			return ast.WalkContinue, nil
 		}
-		closingEnd := closingStart + strings.IndexByte(s[closingStart:], '\n')
-		if closingEnd < closingStart {
-			closingEnd = len(s)
-		} else {
-			closingEnd++
+		lines := fb.Lines()
+		code := string(lines.Value(src))
+		code = strings.TrimSuffix(code, "\n")
+
+		codeStart := 0
+		codeEnd := 0
+		if lines.Len() > 0 {
+			codeStart = lines.At(0).Start
+			codeEnd = lines.At(lines.Len() - 1).Stop
+		}
+		start := findOpeningFenceStart(src, codeStart)
+		if start < 0 {
+			start = codeStart
+		}
+		end := findClosingFenceEnd(src, codeEnd)
+		if end < 0 {
+			end = codeEnd
 		}
 		blocks = append(blocks, Block{
-			Language:  s[langStart:langEnd],
-			Code:      strings.TrimSuffix(s[codeStart:closingStart], "\n"),
-			Start:     startIdx,
-			End:       closingEnd,
+			Language:  string(fb.Language(src)),
+			Code:      code,
+			Start:     start,
+			End:       end,
 			CodeStart: codeStart,
-			CodeEnd:   closingStart,
+			CodeEnd:   codeEnd,
 		})
-	}
+		return ast.WalkContinue, nil
+	})
 	return blocks
 }
 
-func findClosingFence(s string, from int) int {
-	idx := from
-	for idx < len(s) {
-		next := strings.IndexByte(s[idx:], '\n')
-		lineEnd := len(s)
-		if next >= 0 {
+func findOpeningFenceStart(src []byte, codeStart int) int {
+	if codeStart <= 0 {
+		return 0
+	}
+	lineEnd := codeStart - 1
+	for lineEnd >= 0 && (src[lineEnd] == '\n' || src[lineEnd] == '\r') {
+		lineEnd--
+	}
+	if lineEnd < 0 {
+		return 0
+	}
+	lineStart := lineEnd
+	for lineStart > 0 && src[lineStart-1] != '\n' {
+		lineStart--
+	}
+	if isFenceLine(string(src[lineStart : lineEnd+1])) {
+		return lineStart
+	}
+	return lineStart
+}
+
+func findClosingFenceEnd(src []byte, codeEnd int) int {
+	if codeEnd < 0 {
+		codeEnd = 0
+	}
+	if codeEnd > len(src) {
+		codeEnd = len(src)
+	}
+	idx := codeEnd
+	for idx < len(src) {
+		if idx > 0 && src[idx-1] != '\n' {
+			next := bytes.IndexByte(src[idx:], '\n')
+			if next < 0 {
+				return len(src)
+			}
+			idx += next + 1
+		}
+		if idx >= len(src) {
+			return len(src)
+		}
+		lineEnd := len(src)
+		if next := bytes.IndexByte(src[idx:], '\n'); next >= 0 {
 			lineEnd = idx + next
 		}
-		line := strings.TrimSpace(s[idx:lineEnd])
-		if line == "```" {
-			return idx
+		line := string(src[idx:lineEnd])
+		if isFenceLine(line) {
+			if lineEnd < len(src) {
+				return lineEnd + 1
+			}
+			return lineEnd
 		}
-		if next < 0 {
-			break
+		if lineEnd == len(src) {
+			return lineEnd
 		}
 		idx = lineEnd + 1
 	}
-	return -1
+	return len(src)
+}
+
+func isFenceLine(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
 }
 
 func PickBlock(blocks []Block, cursor int) *Block {

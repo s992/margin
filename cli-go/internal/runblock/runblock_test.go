@@ -27,3 +27,14 @@ func TestParseBlocksCRLF(t *testing.T) {
 		t.Fatalf("unexpected language: %s", blocks[0].Language)
 	}
 }
+
+func TestParseBlocksTildeFence(t *testing.T) {
+	in := "~~~python\nprint('x')\n~~~\n"
+	blocks := ParseBlocks(in)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	if blocks[0].Language != "python" {
+		t.Fatalf("unexpected language: %s", blocks[0].Language)
+	}
+}
