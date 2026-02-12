@@ -49,9 +49,13 @@ def test_move_to_trash_falls_back_when_send2trash_fails(monkeypatch, tmp_path):
     target = tmp_path / "note.md"
     target.write_text("x", encoding="utf-8")
 
-    monkeypatch.setattr(margin_services, "_send2trash", lambda _path: (_ for _ in ()).throw(RuntimeError("fail")))
+    monkeypatch.setattr(
+        margin_services, "_send2trash", lambda _path: (_ for _ in ()).throw(RuntimeError("fail"))
+    )
     monkeypatch.setattr(margin_services.sublime, "platform", lambda: "linux")
-    monkeypatch.setattr(margin_services.shutil, "which", lambda name: "/usr/bin/gio" if name == "gio" else None)
+    monkeypatch.setattr(
+        margin_services.shutil, "which", lambda name: "/usr/bin/gio" if name == "gio" else None
+    )
 
     calls = []
 

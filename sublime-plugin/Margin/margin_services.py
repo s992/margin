@@ -4,6 +4,7 @@ import shutil
 import subprocess
 
 import sublime
+
 try:
     from send2trash import send2trash as _send2trash
 except Exception:
