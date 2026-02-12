@@ -1,0 +1,70 @@
+[
+  {
+    "name": "local-package-dry-run",
+    "args": [
+      "--source",
+      "local",
+      "--target-env",
+      "linux",
+      "--margin-root",
+      "/tmp/margin-root",
+      "--cli-path",
+      "/tmp/margin-root/bin/margin",
+      "--sublime-installed-packages-dir",
+      "/tmp/sublime/Installed Packages",
+      "--sublime-user-dir",
+      "/tmp/sublime/Packages/User",
+      "--plugin-mode",
+      "package",
+      "--yes",
+      "--dry-run"
+    ],
+    "expect_exit": 0,
+    "expect": {
+      "source": "local",
+      "plugin_mode": "package",
+      "margin_root": "/tmp/margin-root",
+      "cli_path": "/tmp/margin-root/bin/margin",
+      "installed_packages_dir": "/tmp/sublime/Installed Packages",
+      "user_dir": "/tmp/sublime/Packages/User"
+    }
+  },
+  {
+    "name": "local-unpacked-dry-run",
+    "args": [
+      "--source",
+      "local",
+      "--target-env",
+      "linux",
+      "--margin-root",
+      "/tmp/margin-root-2",
+      "--cli-path",
+      "/tmp/margin-root-2/bin/margin",
+      "--sublime-installed-packages-dir",
+      "/tmp/sublime-2/Installed Packages",
+      "--sublime-user-dir",
+      "/tmp/sublime-2/Packages/User",
+      "--plugin-mode",
+      "unpacked",
+      "--yes",
+      "--dry-run"
+    ],
+    "expect_exit": 0,
+    "expect": {
+      "source": "local",
+      "plugin_mode": "unpacked",
+      "margin_root": "/tmp/margin-root-2",
+      "cli_path": "/tmp/margin-root-2/bin/margin",
+      "installed_packages_dir": "/tmp/sublime-2/Installed Packages",
+      "user_dir": "/tmp/sublime-2/Packages/User"
+    }
+  },
+  {
+    "name": "missing-value-source",
+    "args": [
+      "--source"
+    ],
+    "expect_exit": 1,
+    "expect_error_contains": "missing value for --source"
+  }
+]

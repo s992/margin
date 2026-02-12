@@ -50,22 +50,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.11'
 
-      - name: Install tooling
-        run: python -m pip install --upgrade pip ruff
+      - name: Sync Python dev dependencies
+        run: uv sync --dev
 
       - name: Ruff lint
-        run: ruff check sublime-plugin/Margin
+        run: uv run ruff check sublime-plugin/Margin
 
       - name: Ruff format check
-        run: ruff format --check sublime-plugin/Margin
+        run: uv run ruff format --check sublime-plugin/Margin
 
       - name: Compile check
-        run: python -m compileall sublime-plugin/Margin
+        run: uv run python -m compileall sublime-plugin/Margin
 
   repo-hygiene:
     name: Repo Hygiene
@@ -74,13 +74,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.11'
 
-      - name: Install pre-commit
-        run: python -m pip install --upgrade pip pre-commit
+      - name: Sync Python dev dependencies
+        run: uv sync --dev
 
       - name: Run pre-commit hooks
-        run: pre-commit run --all-files --show-diff-on-failure
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
+  installer-contract:
+    name: Installer Contract (${{ matrix.installer }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            installer: sh
+          - os: windows-latest
+            installer: ps1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.11'
+
+      - name: Sync Python dev dependencies
+        run: uv sync --dev
+
+      - name: Run installer contract tests
+        env:
+          MARGIN_INSTALLER: ${{ matrix.installer }}
+        run: uv run pytest -q scripts/tests/install_contract_test.py

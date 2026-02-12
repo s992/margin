@@ -68,3 +68,25 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build plugin package
+        run: make plugin-package
+
+      - name: Add plugin checksum
+        run: |
+          (
+            cd dist
+            sha256sum Margin.sublime-package >> checksums.txt
+          )
+
+      - name: Upload updated checksums asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: gh release upload "$VERSION" dist/checksums.txt --clobber
+
+      - name: Upload plugin package asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: gh release upload "$VERSION" dist/Margin.sublime-package --clobber

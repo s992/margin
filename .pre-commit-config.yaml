@@ -22,8 +22,8 @@ repos:
     hooks:
       - id: python-compile-check
         name: python compile check
-        language: python
-        entry: python -m compileall sublime-plugin/Margin
+        language: system
+        entry: uv run python -m compileall sublime-plugin/Margin
         pass_filenames: false
       - id: gofmt-check
         name: gofmt check

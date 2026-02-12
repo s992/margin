@@ -4,13 +4,14 @@
 
 - Go (matching `cli-go/go.mod`)
 - Python 3.11+
-- `pre-commit`
+- `uv`
 - Optional for release dry-runs: `goreleaser`
 
 ## Setup
 
 ```bash
-pre-commit install
+uv sync --dev
+uv run pre-commit install
 ```
 
 ## Development workflow
@@ -19,7 +20,7 @@ Use the root `Makefile` targets:
 
 - `make fmt` formats Go and plugin Python code.
 - `make lint` runs static checks.
-- `make test` runs CLI tests.
+- `make test` runs Go and plugin Python tests.
 - `make check` runs lint + tests.
 - `make build` builds the local CLI binary.
 

@@ -1,3 +1,15 @@
+[project]
+name = "margin-dev-tools"
+version = "0.0.0"
+requires-python = ">=3.11"
+
+[dependency-groups]
+dev = [
+  "pre-commit>=4.0.1",
+  "pytest>=8.3.4",
+  "ruff>=0.9.0",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py38"
