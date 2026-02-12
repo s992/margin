@@ -262,7 +262,9 @@ function Get-RequiredArgValue([System.Collections.Generic.List[string]]$ArgList,
 }
 
 $argsList = [System.Collections.Generic.List[string]]::new()
-$argsList.AddRange($args)
+foreach ($argValue in $args) {
+  $argsList.Add([string]$argValue)
+}
 $i = 0
 while ($i -lt $argsList.Count) {
   $arg = $argsList[$i]
