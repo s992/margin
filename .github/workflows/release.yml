@@ -27,7 +27,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: cli-go/go.mod
           cache: false
