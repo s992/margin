@@ -122,7 +122,7 @@ margin search --query "foo" --root "<root>" [--paths scratch,inbox,slack] [--lim
 margin remind scan --root "<root>"
 margin remind schedule --root "<root>"
 margin run-block --file "<path>" --cursor 123 --root "<root>"
-margin slack capture --channel C123 --thread 1712345678.000100 --root "<root>" --token-env SLACK_TOKEN --format markdown
+margin slack capture --transcript "sean  [10:48 AM]\nhello" --root "<root>" --format markdown
 margin mcp --transport stdio --root "<root>" [--readonly true|false]
 ```
 

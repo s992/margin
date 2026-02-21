@@ -5,7 +5,6 @@
   {"caption": "Margin: Delete Current Note", "command": "margin_delete_current_note"},
   {"caption": "Margin: Run Block", "command": "margin_run_block"},
   {"caption": "Margin: Slack Capture", "command": "margin_slack_capture"},
-  {"caption": "Margin: Slack Capture from Clipboard", "command": "margin_slack_capture_from_clipboard"},
   {"caption": "Margin: Ask LLM", "command": "margin_ask_llm"},
   {"caption": "Margin: Insert Last LLM Answer", "command": "margin_insert_last_llm_answer"}
 ]

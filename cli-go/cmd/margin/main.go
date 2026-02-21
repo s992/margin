@@ -223,9 +223,7 @@ func newRunBlockCmd() *cobra.Command {
 }
 
 func newSlackCmd() *cobra.Command {
-	var channel string
-	var thread string
-	var tokenEnv string
+	var transcript string
 	var format string
 	var root string
 	var configPath string
@@ -237,13 +235,13 @@ func newSlackCmd() *cobra.Command {
 
 	captureCmd := &cobra.Command{
 		Use:   "capture",
-		Short: "Capture Slack thread",
+		Short: "Capture Slack transcript from pasted text",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := loadConfigAndLayout(root, configPath); err != nil {
 				return err
 			}
-			res, err := slackcap.Capture(cmd.Context(), root, channel, thread, tokenEnv, format)
+			res, err := slackcap.Capture(cmd.Context(), root, transcript, format)
 			if err != nil {
 				return cliError{code: 1, msg: fmt.Sprintf("slack capture: %v", err)}
 			}
@@ -251,9 +249,7 @@ func newSlackCmd() *cobra.Command {
 			return nil
 		},
 	}
-	captureCmd.Flags().StringVar(&channel, "channel", "", "channel id or name")
-	captureCmd.Flags().StringVar(&thread, "thread", "", "thread ts or link")
-	captureCmd.Flags().StringVar(&tokenEnv, "token-env", "SLACK_TOKEN", "token env var")
+	captureCmd.Flags().StringVar(&transcript, "transcript", "", "pasted Slack transcript text")
 	captureCmd.Flags().StringVar(&format, "format", "markdown", "markdown|text")
 	captureCmd.Flags().StringVar(&root, "root", rootio.DefaultRoot(), "root")
 	captureCmd.Flags().StringVar(&configPath, "config", "", "config path")

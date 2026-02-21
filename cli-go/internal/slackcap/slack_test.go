@@ -2,28 +2,36 @@ package slackcap
 
 import "testing"
 
-func TestParseThreadInputURL(t *testing.T) {
-	channel, thread, err := ParseThreadInput("", "https://example.slack.com/archives/C12345678/p1700000000123456")
-	if err != nil {
-		t.Fatal(err)
+func TestParseTranscriptContinuationSameTimestamp(t *testing.T) {
+	in := `sean  [10:48 AM]
+ hello world
+ Sarine  [10:49 AM]
+ great
+ [10:49 AM]follow up`
+	msgs := ParseTranscript(in)
+	if len(msgs) != 2 {
+		t.Fatalf("len=%d", len(msgs))
 	}
-	if channel != "C12345678" {
-		t.Fatalf("channel=%s", channel)
+	if msgs[1].User != "Sarine" || msgs[1].Ts != "10:49 AM" {
+		t.Fatalf("unexpected message header: %+v", msgs[1])
 	}
-	if thread != "1700000000.123456" {
-		t.Fatalf("thread=%s", thread)
+	if msgs[1].Text != "great\nfollow up" {
+		t.Fatalf("text=%q", msgs[1].Text)
 	}
 }
 
-func TestParseThreadInputURLPreservesLeadingZeros(t *testing.T) {
-	channel, thread, err := ParseThreadInput("", "https://example.slack.com/archives/C12345678/p1700000000000001")
-	if err != nil {
-		t.Fatal(err)
+func TestParseTranscriptTimestampPrefixStartsNewMessage(t *testing.T) {
+	in := `Sarine  [10:49 AM]
+ great
+ [11:55 AM]follow up`
+	msgs := ParseTranscript(in)
+	if len(msgs) != 2 {
+		t.Fatalf("len=%d", len(msgs))
 	}
-	if channel != "C12345678" {
-		t.Fatalf("channel=%s", channel)
+	if msgs[1].User != "Sarine" || msgs[1].Ts != "11:55 AM" {
+		t.Fatalf("unexpected second message: %+v", msgs[1])
 	}
-	if thread != "1700000000.000001" {
-		t.Fatalf("thread=%s", thread)
+	if msgs[1].Text != "follow up" {
+		t.Fatalf("text=%q", msgs[1].Text)
 	}
 }

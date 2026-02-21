@@ -349,15 +349,20 @@ class MarginSlackCaptureCommand(sublime_plugin.WindowCommand):
     MODES = ["Insert+Save", "Insert", "Open File", "Copy"]
 
     def run(self):
-        self.window.show_input_panel("Slack channel (id or name)", "", self._on_channel, None, None)
-
-    def _on_channel(self, channel):
-        self.channel = channel.strip()
-        self.window.show_input_panel("Thread ts or Slack URL", "", self._on_thread, None, None)
-
-    def _on_thread(self, thread):
-        self.thread = thread.strip()
+        self.transcript = self._selected_text_or_clipboard()
+        if not self.transcript:
+            sublime.error_message("Select Slack transcript text or copy it to clipboard first.")
+            return
         self.window.show_quick_panel(self.MODES, self._on_mode, selected_index=0)
+
+    def _selected_text_or_clipboard(self):
+        view = self.window.active_view()
+        if view:
+            chunks = [view.substr(region) for region in view.sel() if not region.empty()]
+            text = "\n".join(chunks).strip()
+            if text:
+                return text
+        return (sublime.get_clipboard() or "").strip()
 
     def _on_mode(self, idx):
         if idx < 0:
@@ -371,14 +376,10 @@ class MarginSlackCaptureCommand(sublime_plugin.WindowCommand):
                     [
                         "slack",
                         "capture",
-                        "--channel",
-                        self.channel,
-                        "--thread",
-                        self.thread,
+                        "--transcript",
+                        self.transcript,
                         "--root",
                         margin_root(),
-                        "--token-env",
-                        "SLACK_TOKEN",
                         "--format",
                         "markdown",
                     ]
@@ -410,51 +411,6 @@ class MarginSlackCaptureCommand(sublime_plugin.WindowCommand):
                 sublime.status_message("Slack captured: {}".format(rel))
 
             sublime.set_timeout(apply_result, 0)
-
-        sublime.set_timeout_async(worker, 0)
-
-
-class MarginSlackCaptureFromClipboardCommand(sublime_plugin.WindowCommand):
-    def run(self):
-        clip = sublime.get_clipboard(1024)
-        match = re.search(r"https://[^\s]*slack\.com/[^\s]+", clip)
-        if not match:
-            sublime.error_message("Clipboard does not contain a Slack link.")
-            return
-        link = match.group(0)
-        channel_match = re.search(r"/archives/([A-Z0-9]+)/", link)
-        channel = channel_match.group(1) if channel_match else ""
-
-        def worker():
-            try:
-                res = run_cli_json(
-                    [
-                        "slack",
-                        "capture",
-                        "--channel",
-                        channel,
-                        "--thread",
-                        link,
-                        "--root",
-                        margin_root(),
-                        "--token-env",
-                        "SLACK_TOKEN",
-                        "--format",
-                        "markdown",
-                    ]
-                )
-            except Exception as exc:
-                msg = str(exc)
-                sublime.set_timeout(lambda m=msg: sublime.error_message(m), 0)
-                return
-
-            def done():
-                view = self.window.active_view()
-                if view:
-                    insert_at_cursor(view, res.get("text", ""))
-                sublime.status_message("Slack captured")
-
-            sublime.set_timeout(done, 0)
 
         sublime.set_timeout_async(worker, 0)
 

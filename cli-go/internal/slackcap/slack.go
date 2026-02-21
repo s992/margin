@@ -2,23 +2,15 @@ package slackcap
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"margin/internal/rootio"
 )
-
-var slackHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 type Message struct {
 	User string `json:"user"`
@@ -32,72 +24,23 @@ type CaptureResult struct {
 	Meta      map[string]any `json:"meta"`
 }
 
-type apiResp struct {
-	OK               bool      `json:"ok"`
-	Error            string    `json:"error"`
-	Messages         []Message `json:"messages"`
-	HasMore          bool      `json:"has_more"`
-	ResponseMetadata struct {
-		NextCursor string `json:"next_cursor"`
-	} `json:"response_metadata"`
-}
+var (
+	headerRe   = regexp.MustCompile(`^\s*(.+?)\s*\[(.+?)\]\s*$`)
+	tsPrefixRe = regexp.MustCompile(`^\s*\[(.+?)\]\s*(.*)$`)
+)
 
-var msgURLRe = regexp.MustCompile(`archives/([A-Z0-9]+)/p(\d{16})`)
-
-func ParseThreadInput(channel, thread string) (string, string, error) {
-	thread = strings.TrimSpace(thread)
-	if strings.Contains(thread, "slack.com") {
-		u, err := url.Parse(thread)
-		if err != nil {
-			return "", "", err
-		}
-		m := msgURLRe.FindStringSubmatch(u.Path)
-		if len(m) == 3 {
-			channel = m[1]
-			thread = fmt.Sprintf("%s.%s", m[2][:10], m[2][10:])
-			return channel, thread, nil
-		}
-		q := u.Query()
-		if c, ok := q["channel"]; ok && len(c) > 0 {
-			channel = c[0]
-		}
-		if t, ok := q["thread_ts"]; ok && len(t) > 0 {
-			thread = t[0]
-		}
-	}
-	if channel == "" || thread == "" {
-		return "", "", errors.New("channel and thread are required")
-	}
-	return channel, thread, nil
-}
-
-func Capture(ctx context.Context, root, channel, thread, tokenEnv, format string) (CaptureResult, error) {
+func Capture(ctx context.Context, root, transcript, format string) (CaptureResult, error) {
 	if err := ctx.Err(); err != nil {
 		return CaptureResult{}, err
 	}
-	if tokenEnv == "" {
-		tokenEnv = "SLACK_TOKEN"
+	transcript = strings.TrimSpace(transcript)
+	if transcript == "" {
+		return CaptureResult{}, errors.New("transcript is required")
 	}
-	token := os.Getenv(tokenEnv)
-	if token == "" {
-		return CaptureResult{}, fmt.Errorf("missing token in env %s", tokenEnv)
-	}
-	ch, th, err := ParseThreadInput(channel, thread)
-	if err != nil {
-		return CaptureResult{}, err
-	}
-	if !strings.HasPrefix(ch, "C") && !strings.HasPrefix(ch, "G") {
-		ch, err = resolveChannelID(ctx, ch, token)
-		if err != nil {
-			return CaptureResult{}, err
-		}
-	}
-	msgs, err := fetchReplies(ctx, ch, th, token)
-	if err != nil {
-		return CaptureResult{}, err
-	}
-	text := renderMessages(ch, th, msgs, format)
-	filename := fmt.Sprintf("%s_%s.md", safeName(ch), strings.ReplaceAll(th, ".", "_"))
+
+	msgs := ParseTranscript(transcript)
+	text := renderMessages(msgs, format)
+	filename := fmt.Sprintf("%s_%s.md", safeName(firstAuthor(msgs)), time.Now().Format("20060102T150405"))
 	saveAbs := filepath.Join(root, "slack", filename)
 	if err := rootio.AtomicWriteFile(saveAbs, []byte(text), 0o644); err != nil {
 		return CaptureResult{}, err
@@ -110,129 +53,97 @@ func Capture(ctx context.Context, root, channel, thread, tokenEnv, format string
 		SavedPath: rel,
 		Text:      text,
 		Meta: map[string]any{
-			"channel":       ch,
-			"thread_ts":     th,
+			"source":        "pasted_transcript",
 			"message_count": len(msgs),
 		},
 	}, nil
 }
 
-func resolveChannelID(ctx context.Context, name, token string) (string, error) {
-	cursor := ""
-	for {
-		if err := ctx.Err(); err != nil {
-			return "", err
+func ParseTranscript(transcript string) []Message {
+	lines := strings.Split(strings.ReplaceAll(transcript, "\r\n", "\n"), "\n")
+	out := make([]Message, 0, 16)
+	var cur *Message
+
+	flush := func() {
+		if cur == nil {
+			return
 		}
-		endpoint := "https://slack.com/api/conversations.list?limit=200&types=public_channel,private_channel"
-		if cursor != "" {
-			endpoint += "&cursor=" + url.QueryEscape(cursor)
+		cur.Text = strings.TrimSpace(cur.Text)
+		if cur.Text != "" {
+			out = append(out, *cur)
 		}
-		body, err := apiGet(ctx, endpoint, token)
-		if err != nil {
-			return "", err
+		cur = nil
+	}
+
+	for _, raw := range lines {
+		line := strings.TrimRight(raw, " \t")
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
-		var data struct {
-			OK      bool   `json:"ok"`
-			Error   string `json:"error"`
-			Channel []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"channels"`
-			ResponseMetadata struct {
-				NextCursor string `json:"next_cursor"`
-			} `json:"response_metadata"`
+		if m := headerRe.FindStringSubmatch(line); len(m) == 3 {
+			flush()
+			cur = &Message{User: strings.TrimSpace(m[1]), Ts: strings.TrimSpace(m[2])}
+			continue
 		}
-		if err := json.Unmarshal(body, &data); err != nil {
-			return "", err
-		}
-		if !data.OK {
-			return "", errors.New(data.Error)
-		}
-		for _, c := range data.Channel {
-			if c.Name == name {
-				return c.ID, nil
+		if m := tsPrefixRe.FindStringSubmatch(line); len(m) == 3 {
+			ts := strings.TrimSpace(m[1])
+			text := strings.TrimSpace(m[2])
+			if cur == nil {
+				cur = &Message{User: "unknown", Ts: ts}
+			} else if cur.Ts != ts {
+				user := cur.User
+				flush()
+				cur = &Message{User: user, Ts: ts}
 			}
+			if text != "" {
+				if cur.Text != "" {
+					cur.Text += "\n"
+				}
+				cur.Text += text
+			}
+			continue
 		}
-		if data.ResponseMetadata.NextCursor == "" {
-			break
+		if cur == nil {
+			cur = &Message{User: "unknown", Ts: "unknown"}
 		}
-		cursor = data.ResponseMetadata.NextCursor
+		if cur.Text != "" {
+			cur.Text += "\n"
+		}
+		cur.Text += strings.TrimSpace(line)
 	}
-	return "", fmt.Errorf("channel not found: %s", name)
+	flush()
+	return out
 }
 
-func fetchReplies(ctx context.Context, channel, thread, token string) ([]Message, error) {
-	cursor := ""
-	out := make([]Message, 0, 32)
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		endpoint := fmt.Sprintf("https://slack.com/api/conversations.replies?channel=%s&ts=%s&limit=200", url.QueryEscape(channel), url.QueryEscape(thread))
-		if cursor != "" {
-			endpoint += "&cursor=" + url.QueryEscape(cursor)
-		}
-		body, err := apiGet(ctx, endpoint, token)
-		if err != nil {
-			return nil, err
-		}
-		var resp apiResp
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil, err
-		}
-		if !resp.OK {
-			return nil, errors.New(resp.Error)
-		}
-		out = append(out, resp.Messages...)
-		if !resp.HasMore || resp.ResponseMetadata.NextCursor == "" {
-			break
-		}
-		cursor = resp.ResponseMetadata.NextCursor
-	}
-	return out, nil
-}
-
-func renderMessages(channel, thread string, msgs []Message, format string) string {
+func renderMessages(msgs []Message, format string) string {
 	capturedAt := time.Now().Format(time.RFC3339)
 	if format == "text" {
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("channel=%s thread_ts=%s captured_at=%s\n\n", channel, thread, capturedAt))
+		sb.WriteString(fmt.Sprintf("source=pasted_transcript captured_at=%s\n\n", capturedAt))
 		for _, m := range msgs {
 			sb.WriteString(fmt.Sprintf("[%s] %s: %s\n", m.Ts, m.User, strings.TrimSpace(m.Text)))
 		}
 		return sb.String()
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**Slack thread** channel=%s thread_ts=%s captured_at=%s\n\n", channel, thread, capturedAt))
+	sb.WriteString(fmt.Sprintf("**Imported conversation** source=slack pasted_text captured_at=%s\n\n", capturedAt))
 	for _, m := range msgs {
-		ts := m.Ts
-		if f, err := strconv.ParseFloat(m.Ts, 64); err == nil {
-			ts = time.Unix(int64(f), 0).Format(time.RFC3339)
+		sb.WriteString(fmt.Sprintf("- `%s` **%s**:\n", m.Ts, m.User))
+		for _, line := range strings.Split(strings.TrimSpace(m.Text), "\n") {
+			sb.WriteString("  " + line + "\n")
 		}
-		sb.WriteString(fmt.Sprintf("- `%s` **%s**: %s\n", ts, m.User, strings.TrimSpace(m.Text)))
+		sb.WriteString("\n")
 	}
-	return sb.String()
+	return strings.TrimRight(sb.String(), "\n")
 }
 
-func apiGet(ctx context.Context, endpoint, token string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
+func firstAuthor(msgs []Message) string {
+	for _, m := range msgs {
+		if s := safeName(m.User); s != "" && s != "unknown" {
+			return s
+		}
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "margin-cli/0.1")
-	resp, err := slackHTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("slack api %d: %s", resp.StatusCode, string(b))
-	}
-	return io.ReadAll(resp.Body)
+	return "slack"
 }
 
 func safeName(s string) string {
